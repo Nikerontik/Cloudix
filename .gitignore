@@ -30,4 +30,4 @@ Thumbs.db
 .idea/
 
 # Wails misc
-frontend/wailsjs/**/*.d.ts.map
+frontend/wailsjs/**/*.d.ts.map/cloudix
