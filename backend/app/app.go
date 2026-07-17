@@ -635,6 +635,20 @@ func (a *App) SendTyping(peerID string, isTyping bool) error {
 	return nil
 }
 
+func (a *App) SendPing(peerID string) error {
+	peer, ok := a.discovery.GetPeer(peerID)
+	if !ok {
+		return fmt.Errorf("peer %s not found", peerID)
+	}
+	payload, _ := json.Marshal(models.PingPayload{SentAt: time.Now().UnixMilli()})
+	env := models.WireEnvelope{
+		Type:     models.EnvelopeTypePing,
+		SenderID: a.profile.PeerID,
+		Payload:  payload,
+	}
+	return a.transport.Send(peer, env)
+}
+
 // NEW: реакции на сообщения. Сохраняем локально сразу (оптимистично на
 // фронте это уже сделано), затем рассылаем собеседнику, если он в сети.
 func (a *App) ReactToMessage(peerID, messageID, emoji string) error {
@@ -698,6 +712,27 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 	}
 
 	switch env.Type {
+	case models.EnvelopeTypePing:
+		var p models.PingPayload
+		_ = json.Unmarshal(env.Payload, &p)
+		pong, _ := json.Marshal(models.PingPayload{SentAt: p.SentAt})
+		peer, ok := a.discovery.GetPeer(env.SenderID)
+		if ok {
+			_ = a.transport.Send(peer, models.WireEnvelope{
+				Type:     models.EnvelopeTypePong,
+				SenderID: a.profile.PeerID,
+				Payload:  pong,
+			})
+		}
+
+	case models.EnvelopeTypePong:
+		var p models.PingPayload
+		_ = json.Unmarshal(env.Payload, &p)
+		rtt := time.Now().UnixMilli() - p.SentAt
+		runtime.EventsEmit(a.ctx, "ping:result", map[string]interface{}{
+			"peerId": env.SenderID,
+			"ms":     rtt,
+		})
 	case models.EnvelopeTypeMessage:
 		var p models.MessagePayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
@@ -935,4 +970,17 @@ func mustMarshalTyping(p models.TypingPayload) string {
 		return `{"isTyping":false}`
 	}
 	return string(b)
+}
+
+func (a *App) RestartNetworking() error {
+	if a.discovery == nil {
+		return fmt.Errorf("discovery not initialized")
+	}
+	if err := a.discovery.Restart(); err != nil {
+		return fmt.Errorf("discovery.Restart: %w", err)
+	}
+	if a.ctx != nil {
+		runtime.LogInfof(a.ctx, "networking restarted after connectivity change")
+	}
+	return nil
 }

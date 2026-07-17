@@ -29,7 +29,11 @@ export function ReactToMessage(arg1:string,arg2:string,arg3:string):Promise<void
 
 export function Register(arg1:string,arg2:string,arg3:string,arg4:string):Promise<models.Profile>;
 
+export function RestartNetworking():Promise<void>;
+
 export function SendMessage(arg1:string,arg2:string,arg3:string,arg4:string):Promise<models.Message>;
+
+export function SendPing(arg1:string):Promise<void>;
 
 export function SendSignal(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean):Promise<void>;
 

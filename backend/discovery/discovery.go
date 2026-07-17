@@ -64,6 +64,18 @@ func (s *Service) Stop() {
 	})
 }
 
+func (s *Service) Restart() error {
+	s.Stop()
+	s.stopOnce = sync.Once{}
+	s.stopCh = make(chan struct{})
+
+	s.mu.Lock()
+	s.peers = make(map[string]*models.Peer)
+	s.mu.Unlock()
+
+	return s.Start()
+}
+
 // FIX: рассылаем прощание несколько раз, но не удаляем stalePeers у других –
 // это выполняется на стороне получателя автоматически при получении TCPPort == -1.
 func (s *Service) AnnounceGoodbye(profile *models.Profile) {

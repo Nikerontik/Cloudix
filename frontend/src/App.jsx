@@ -2,11 +2,11 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { motion, AnimatePresence } from "framer-motion";
 import { useT } from "./i18n";
 import * as WailsApp from "../wailsjs/go/app/App";
-import { EventsOn } from "../wailsjs/runtime/runtime";
+import { EventsOn, WindowIsMaximised } from "../wailsjs/runtime/runtime";
 
 const REACTIONS = ["👍", "❤️", "🔥", "😂", "👎"];
 const SAVED_CHAT_ID = "__saved__";
-const SAVED_STORAGE_KEY = "cloudix:saved-messages";
+const savedStorageKey = (peerId) => "cloudix:saved-messages:" + (peerId || "anon");
 
 function Avatar({ name, avatar, size = "", onClick, online }) {
   return (
@@ -153,6 +153,34 @@ function Onboarding({ onDone }) {
           onClick={finish}
         >
           {busy ? "Создаём…" : "Начать общение"}
+        </motion.button>
+      </motion.div>
+    </div>
+  );
+}
+
+function DisclaimerModal({ onDismiss }) {
+  return (
+    <div className="onboarding-root">
+      <div className="onboarding-titlebar" />
+      <motion.div
+        className="onboarding-card"
+        initial={{ opacity: 0, y: 24, scale: 0.96 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <h1 className="onboarding-title">Cloudix</h1>
+        <p className="onboarding-sub">
+          Это первая версия приложения. Возможны баги и нестабильная работа —
+          спасибо за понимание!
+        </p>
+        <motion.button
+          type="button"
+          className="onboarding-btn"
+          whileTap={{ scale: 0.96 }}
+          onClick={onDismiss}
+        >
+          Понятно, продолжить
         </motion.button>
       </motion.div>
     </div>
@@ -427,17 +455,22 @@ function CallModal({
 }) {
   const [phase, setPhase] = useState(isCaller ? "calling" : "ringing");
   const [muted, setMuted] = useState(false);
-  const [sharingScreen, setSharingScreen] = useState(false);
   const [seconds, setSeconds] = useState(0);
-  const [remoteSharingScreen, setRemoteSharingScreen] = useState(false);
+  const [remoteHasVideo, setRemoteHasVideo] = useState(false);
   const [errorText, setErrorText] = useState("");
-  // NEW: возможность увеличить демонстрацию по двойному клику (object-fit
-  // переключается между cover и contain, чтобы видеть кадр целиком).
   const [remoteZoomed, setRemoteZoomed] = useState(false);
+  const [remoteVolume, setRemoteVolume] = useState(1);
+  const remoteVolumeRef = useRef(1);
+
+  const handleVolumeChange = (e) => {
+    const v = parseFloat(e.target.value);
+    remoteVolumeRef.current = v;
+    setRemoteVolume(v);
+    if (remoteAudioRef.current) remoteAudioRef.current.volume = v;
+  };
 
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
-  const screenStreamRef = useRef(null);
   const remoteStreamRef = useRef(new MediaStream());
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -459,7 +492,7 @@ function CallModal({
       if (remoteAudioRef.current) {
         remoteAudioRef.current.srcObject = remoteStreamRef.current;
         remoteAudioRef.current.muted = false;
-        remoteAudioRef.current.volume = 1;
+        remoteAudioRef.current.volume = remoteVolumeRef.current;
         await remoteAudioRef.current.play().catch(() => {});
       }
     } catch (err) {
@@ -473,7 +506,7 @@ function CallModal({
       .filter((tr) => tr.readyState === "live" && tr.enabled !== false);
 
     const hasVideo = liveVideoTracks.length > 0;
-    setRemoteSharingScreen(hasVideo);
+    setRemoteHasVideo(hasVideo);
     if (!hasVideo) setRemoteZoomed(false);
 
     try {
@@ -498,9 +531,6 @@ function CallModal({
       localStreamRef.current?.getTracks().forEach((tr) => tr.stop());
     } catch {}
     try {
-      screenStreamRef.current?.getTracks().forEach((tr) => tr.stop());
-    } catch {}
-    try {
       remoteStreamRef.current?.getTracks().forEach((tr) => tr.stop());
     } catch {}
   };
@@ -508,8 +538,7 @@ function CallModal({
   const resetCallUiState = () => {
     setPhase(isCaller ? "calling" : "ringing");
     setMuted(false);
-    setSharingScreen(false);
-    setRemoteSharingScreen(false);
+    setRemoteHasVideo(false);
     setRemoteZoomed(false);
     setSeconds(0);
     setErrorText("");
@@ -520,11 +549,6 @@ function CallModal({
     startedRef.current = false;
   };
 
-  // FIX: гарантированно вызываем onClose() в конце, оборачивая в try/catch —
-  // раньше исключение в середине cleanupCall (например при закрытом
-  // WailsApp.SendSignal) обрывало функцию ДО onClose(), из-за чего
-  // activeCallIdRef в App не сбрасывался и следующий звонок отбрасывался
-  // как "конкурирующий" (см. onSignalIncoming в App).
   const cleanupCall = useCallback(
     (notify = false, kind = "end") => {
       if (closedRef.current) return;
@@ -532,9 +556,7 @@ function CallModal({
 
       try {
         if (notify) {
-          WailsApp.SendSignal(target.peerId, callId, kind, "", video || sharingScreen).catch(
-            () => {}
-          );
+          WailsApp.SendSignal(target.peerId, callId, kind, "", video).catch(() => {});
         }
       } catch {}
 
@@ -556,7 +578,6 @@ function CallModal({
 
       pcRef.current = null;
       localStreamRef.current = null;
-      screenStreamRef.current = null;
       remoteStreamRef.current = new MediaStream();
       localVideoSenderRef.current = null;
 
@@ -568,7 +589,7 @@ function CallModal({
         console.error("cleanupCall onClose failed:", err);
       }
     },
-    [callId, onClose, sharingScreen, target.peerId, video]
+    [callId, onClose, target.peerId, video]
   );
 
   const createPeerConnection = () => {
@@ -578,9 +599,9 @@ function CallModal({
     pcRef.current = pc;
 
     if (earlyIceRef.current.length) {
-  pendingIceRef.current.push(...earlyIceRef.current);
-  earlyIceRef.current = [];
-}
+      pendingIceRef.current.push(...earlyIceRef.current);
+      earlyIceRef.current = [];
+    }
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -589,7 +610,7 @@ function CallModal({
           callId,
           "ice",
           JSON.stringify(e.candidate),
-          video || sharingScreen
+          video
         ).catch((err) => {
           console.error("SendSignal ice failed:", err);
         });
@@ -617,11 +638,6 @@ function CallModal({
       await refreshRemoteVideoUi();
     };
 
-    // FIX: убрана обработка "closed" здесь — pc.close() вызывается ИЗ
-    // cleanupCall, так что дополнительный вызов cleanupCall из этого же
-    // колбэка при переходе в closed приводил к путанице состояний между
-    // двумя последовательными звонками. "failed"/"disconnected" остаются,
-    // это реальные обрывы соединения по сети.
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "connected") {
         setPhase("connected");
@@ -635,40 +651,14 @@ function CallModal({
     return pc;
   };
 
-  const renegotiateNow = async () => {
-    const pc = pcRef.current;
-    if (!pc || closedRef.current) return;
-    if (makingOfferRef.current) return;
-    if (pc.signalingState !== "stable") return;
-
-    try {
-      makingOfferRef.current = true;
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await WailsApp.SendSignal(
-        target.peerId,
-        callId,
-        "renegotiate-offer",
-        JSON.stringify(offer),
-        true
-      );
-    } catch (err) {
-      console.warn("renegotiateNow failed:", err);
-    } finally {
-      makingOfferRef.current = false;
-    }
-  };
-
   const startLocalMedia = async () => {
     if (localStreamRef.current) return localStreamRef.current;
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("getUserMedia недоступен");
     }
 
-    try { 
-      console.log("requesting media...");
+    try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video });
-      console.log("media granted!", stream);
       localStreamRef.current = stream;
 
       if (video && localVideoRef.current) {
@@ -694,29 +684,6 @@ function CallModal({
         if (track.kind === "video") localVideoSenderRef.current = sender;
       }
     });
-  };
-
-  const ensureVideoSender = async () => {
-    const pc = pcRef.current;
-    if (!pc) throw new Error("PeerConnection не создан");
-
-    if (localVideoSenderRef.current) return localVideoSenderRef.current;
-
-    let sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
-    if (!sender) {
-      const videoTransceiver = pc
-        .getTransceivers()
-        .find((tr) => tr.sender && (!tr.sender.track || tr.sender.track.kind === "video"));
-      sender = videoTransceiver?.sender || null;
-    }
-
-    if (!sender) {
-      const transceiver = pc.addTransceiver("video", { direction: "sendrecv" });
-      sender = transceiver.sender;
-    }
-
-    localVideoSenderRef.current = sender;
-    return sender;
   };
 
   const handleOfferLike = async (pc, payload) => {
@@ -761,7 +728,7 @@ function CallModal({
     if (!pc) {
       if (payload.kind === "ice") {
         earlyIceRef.current.push(payload.data);
-      } 
+      }
       return;
     }
 
@@ -791,13 +758,6 @@ function CallModal({
       } else if (payload.kind === "offer" || payload.kind === "renegotiate-offer") {
         await handleOfferLike(pc, payload);
         await attachRemoteStream();
-        await refreshRemoteVideoUi();
-      } else if (payload.kind === "screen-share-stopped") {
-        // FIX: раньше здесь только обновляли UI, но флаг remoteSharingScreen
-        // мог "залипнуть" true, если трек ещё формально live, но уже
-        // остановлен на стороне отправителя. Явный сброс + пересчёт.
-        setRemoteSharingScreen(false);
-        setRemoteZoomed(false);
         await refreshRemoteVideoUi();
       }
     } catch (err) {
@@ -883,124 +843,6 @@ function CallModal({
     setMuted((m) => !m);
   };
 
-  const stopScreenShare = async ({ silent = false } = {}) => {
-    const pc = pcRef.current;
-    if (!pc) return;
-
-    let sender = null;
-    try {
-      sender = await ensureVideoSender();
-    } catch (err) {
-      console.warn("ensureVideoSender failed during stop:", err);
-    }
-
-    const camTrack = localStreamRef.current?.getVideoTracks?.()[0] || null;
-
-    try {
-      if (sender) {
-        if (camTrack) {
-          await sender.replaceTrack(camTrack);
-        } else {
-          await sender.replaceTrack(null);
-        }
-      }
-    } catch (err) {
-      console.warn("stopScreenShare replaceTrack failed:", err);
-    }
-
-    try {
-      screenStreamRef.current?.getTracks().forEach((tr) => {
-        tr.onended = null;
-        tr.stop();
-      });
-    } catch {}
-
-    screenStreamRef.current = null;
-    setSharingScreen(false);
-    // FIX: раньше remoteSharingScreen/remoteZoomed не сбрасывались при
-    // остановке СВОЕЙ демки — из-за этого UI второй стороны иногда "залипал"
-    // в режиме демонстрации даже после её выключения.
-    setRemoteZoomed(false);
-    clearCallError();
-
-    try {
-      if (localVideoRef.current) {
-        if (camTrack && localStreamRef.current) {
-          localVideoRef.current.srcObject = localStreamRef.current;
-          localVideoRef.current.muted = true;
-          await localVideoRef.current.play().catch(() => {});
-        } else {
-          localVideoRef.current.pause?.();
-          localVideoRef.current.srcObject = null;
-        }
-      }
-    } catch {}
-
-    await renegotiateNow();
-
-    if (!silent) {
-      WailsApp.SendSignal(target.peerId, callId, "screen-share-stopped", "", true).catch(() => {});
-    }
-  };
-
-  const toggleScreenShare = async () => {
-    const pc = pcRef.current;
-    if (!pc) return;
-
-    if (sharingScreen) {
-      await stopScreenShare();
-      return;
-    }
-
-    try {
-      clearCallError();
-
-      if (!navigator.mediaDevices?.getDisplayMedia) {
-        throw new Error("getDisplayMedia недоступен");
-      }
-
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { displaySurface: "monitor", frameRate: 15 },
-        audio: false,
-      });
-
-      const screenTrack = screenStream.getVideoTracks()[0];
-      if (!screenTrack) throw new Error("Screen track не получен");
-
-      screenStreamRef.current = screenStream;
-
-      const sender = await ensureVideoSender();
-      await sender.replaceTrack(screenTrack);
-
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = screenStream;
-        localVideoRef.current.muted = true;
-        await localVideoRef.current.play().catch(() => {});
-      }
-
-      screenTrack.onended = async () => {
-        await stopScreenShare({ silent: true });
-      };
-
-      setSharingScreen(true);
-      await renegotiateNow();
-    } catch (err) {
-      console.warn("getDisplayMedia cancelled or failed:", err);
-      setSharingScreen(false);
-      // FIX: сбрасываем и remote-флаг — ошибка старта демки на своей
-      // стороне не должна оставлять "фантомную" удалённую демку висящей.
-      setRemoteSharingScreen(false);
-      setRemoteZoomed(false);
-      try {
-        screenStreamRef.current?.getTracks().forEach((tr) => tr.stop());
-      } catch {}
-      screenStreamRef.current = null;
-      setErrorText(
-        "Не удалось начать демонстрацию экрана. Проверь разрешение Screen Recording и повтори."
-      );
-    }
-  };
-
   const endCall = () => {
     cleanupCall(true, "end");
   };
@@ -1008,9 +850,8 @@ function CallModal({
   const fmt = (s) =>
     `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
-  const showRemoteVideoLayer = video || sharingScreen || remoteSharingScreen;
-  const showSelfVideoLayer = video || sharingScreen;
-  const isSharingAny = sharingScreen || remoteSharingScreen;
+  const showRemoteVideoLayer = video || remoteHasVideo;
+  const showSelfVideoLayer = video;
 
   return (
     <motion.div
@@ -1020,7 +861,7 @@ function CallModal({
       exit={{ opacity: 0 }}
     >
       <motion.div
-        className={"call-card " + (isSharingAny ? "sharing" : "")}
+        className="call-card"
         initial={{ scale: 0.9, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.9, opacity: 0 }}
@@ -1066,29 +907,25 @@ function CallModal({
         ) : (
           <>
             <div className="call-actions">
-              {showRemoteVideoLayer && <button type="button" className="call-btn">🎥</button>}
-              <button
-                type="button"
-                className={"call-btn " + (sharingScreen ? "active" : "")}
-                onClick={toggleScreenShare}
-              >
-                📺
-              </button>
               <button type="button" className="call-btn" onClick={toggleMute}>
                 {muted ? "🔇" : "🎙"}
               </button>
               <button type="button" className="call-btn end" onClick={endCall}>
-                ✕
+                  ✕
               </button>
             </div>
+            <div className="call-volume">
+              <span>🔊</span>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={remoteVolume}
+                onChange={handleVolumeChange}
+              />
+            </div>
             <div className="call-labels">
-              <span>
-                {sharingScreen
-                  ? "Демонстрация включена"
-                  : remoteSharingScreen
-                    ? "Удалённая демонстрация"
-                    : t.call.screen}
-              </span>
               <span>{muted ? t.call.unmute : t.call.mute}</span>
               <span>{t.call.end}</span>
             </div>
@@ -1096,6 +933,7 @@ function CallModal({
         )}
       </motion.div>
     </motion.div>
+
   );
 }
 
@@ -1218,6 +1056,7 @@ function ChatWindow({
   onTyping,
   isPeerTyping,
   blocked,
+  pingByPeer,
   t,
 }) {
   const [text, setText] = useState("");
@@ -1307,7 +1146,12 @@ function ChatWindow({
             {blocked ? t.profile.blockedLabel : typeLabel}
           </div>
         </div>
-        <ConnectionBadge status={connStatus} t={t} />
+        <div className="chat-header-right">
+          {chat.peerId && pingByPeer[chat.peerId] != null && (
+            <span className="ping-badge">{pingByPeer[chat.peerId]} ms</span>
+          )}
+          <ConnectionBadge status={connStatus} t={t} />
+        </div>
       </div>
 
       <div className="messages" ref={scrollRef}>
@@ -1618,6 +1462,19 @@ function ProfilePanel({
 export default function App() {
   const [theme, setTheme] = useState("dark");
   const [lang, setLang] = useState("ru");
+  const [isMaximized, setIsMaximized] = useState(false);
+
+useEffect(() => {
+  const checkMaximized = () => {
+    const maximized =
+      window.innerWidth >= window.screen.availWidth &&
+      window.innerHeight >= window.screen.availHeight;
+    setIsMaximized(maximized);
+  };
+  checkMaximized();
+  window.addEventListener("resize", checkMaximized);
+  return () => window.removeEventListener("resize", checkMaximized);
+}, []);
   const t = useT(lang);
 
   const [profile, setProfileState] = useState(null);
@@ -1627,23 +1484,37 @@ export default function App() {
   const [blocked, setBlocked] = useState([]);
 
   // NEW: локальный чат "Избранное" — хранится в localStorage, не трогает бэкенд
-  const [savedMessages, setSavedMessages] = useState(() => {
-    try {
-      const raw = localStorage.getItem(SAVED_STORAGE_KEY);
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
-  });
+const [savedMessages, setSavedMessages] = useState([]);
+const savedLoadedRef = useRef(false);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(SAVED_STORAGE_KEY, JSON.stringify(savedMessages));
-    } catch {}
-  }, [savedMessages]);
+useEffect(() => {
+  savedLoadedRef.current = false;
+  if (!profile?.peerId) {
+    setSavedMessages([]);
+    savedLoadedRef.current = true;
+    return;
+  }
+  try {
+    const raw = localStorage.getItem(savedStorageKey(profile.peerId));
+    setSavedMessages(raw ? JSON.parse(raw) : []);
+  } catch {
+    setSavedMessages([]);
+  } finally {
+    savedLoadedRef.current = true;
+  }
+}, [profile?.peerId]);
 
-  // NEW: индикатор "печатает…" по каждому пиру
-  const [typingByPeer, setTypingByPeer] = useState({});
+useEffect(() => {
+  if (!profile?.peerId) return;
+  if (!savedLoadedRef.current) return;
+  try {
+    localStorage.setItem(savedStorageKey(profile.peerId), JSON.stringify(savedMessages));
+  } catch {}
+}, [savedMessages, profile?.peerId]);
+
+// NEW: индикатор "печатает…" по каждому пиру
+const [typingByPeer, setTypingByPeer] = useState({});
+const [pingByPeer, setPingByPeer] = useState({});
 
   const [tab, setTab] = useState("all");
   const [search, setSearch] = useState("");
@@ -1771,10 +1642,17 @@ export default function App() {
       refreshOnlinePeers();
     }, 3500);
 
+    const pingInterval = setInterval(() => {
+      onlinePeersRawRef.current.forEach((p) => {
+        WailsApp.SendPing(p.peerId).catch(() => {});
+      });
+    }, 5000);
+
     return () => {
       clearTimeout(t1);
       clearTimeout(t2);
       clearTimeout(t3);
+      clearInterval(pingInterval);
     };
   }, [profile?.peerId, refreshChats, refreshOnlinePeers]);
 
@@ -1827,6 +1705,11 @@ export default function App() {
       }));
     });
 
+        const cancelPing = EventsOn("ping:result", ({ peerId, ms } = {}) => {
+      if (!peerId) return;
+      setPingByPeer((prev) => ({ ...prev, [peerId]: ms }));
+    });
+
     const cancelProfileUpdated = EventsOn("profile:updated", () => refreshChats());
     const cancelAccountDeleted = EventsOn("account:deleted", () => refreshChats());
 
@@ -1876,13 +1759,27 @@ export default function App() {
 
     const cancelSignal = EventsOn("signal:incoming", onSignalIncoming);
 
-    const netCheck = () => {
-      if (typeof navigator !== "undefined" && "onLine" in navigator) {
-        setConnStatus(navigator.onLine ? "connected" : "reconnecting");
-        if (!navigator.onLine) setOnlinePeersRaw([]);
-        else refreshOnlinePeers();
-      }
-    };
+const netCheck = () => {
+  if (typeof navigator !== "undefined" && "onLine" in navigator) {
+    if (!navigator.onLine) {
+      setConnStatus("reconnecting");
+      setOnlinePeersRaw([]);
+    } else {
+      // FIX: простого navigator.onLine недостаточно — Go-стороне нужно
+      // заново привязать multicast UDP listener к новому сетевому интерфейсу,
+      // иначе discovery молча остаётся мёртвым при видимом "connected".
+      setConnStatus("connected");
+      WailsApp.RestartNetworking()
+        .then(() => {
+          refreshOnlinePeers();
+          refreshChats();
+        })
+        .catch((err) => {
+          console.error("RestartNetworking failed:", err);
+        });
+    }
+  }
+};
 
     window.addEventListener("offline", netCheck);
     window.addEventListener("online", netCheck);
@@ -1893,6 +1790,7 @@ export default function App() {
       cancelDeleted?.();
       cancelRead?.();
       cancelReacted?.();
+      cancelPing?.();
       cancelProfileUpdated?.();
       cancelAccountDeleted?.();
       cancelSignal?.();
@@ -2110,6 +2008,7 @@ export default function App() {
     setMediaChatId(null);
     setCallState(null);
     setTypingByPeer({});
+    setSavedMessages([]);
   };
 
   const chatsList = useMemo(() => {
@@ -2159,12 +2058,14 @@ export default function App() {
   const activeIsBlocked = activeChatMeta ? blocked.includes(activeChatMeta.peerId) : false;
   const activeIsTyping =
     activeChatMeta && activeChatMeta.peerId ? !!typingByPeer[activeChatMeta.peerId] : false;
+  const [showDisclaimer, setShowDisclaimer] = useState(false);
 
   if (bootLoading) return <div className="app-root" />;
-  if (!profile) return <Onboarding onDone={(p) => setProfileState(p)} />;
+  if (!profile) return <Onboarding onDone={(p) => { setProfileState(p); setShowDisclaimer(true); }} />;
+  if (showDisclaimer) return <DisclaimerModal onDismiss={() => setShowDisclaimer(false)} />;
 
-  return (
-    <div className="app-root">
+    return (
+      <div className={"app-root " + (isMaximized ? "maximized" : "")}>
       <div className="titlebar" />
       <div className="app-shell">
         <Sidebar
@@ -2217,6 +2118,7 @@ export default function App() {
             }
             isPeerTyping={activeIsTyping}
             blocked={activeIsBlocked}
+            pingByPeer={pingByPeer}
             t={t}
           />
         )}

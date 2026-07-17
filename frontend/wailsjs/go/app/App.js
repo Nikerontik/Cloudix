@@ -54,8 +54,16 @@ export function Register(arg1, arg2, arg3, arg4) {
   return window['go']['app']['App']['Register'](arg1, arg2, arg3, arg4);
 }
 
+export function RestartNetworking() {
+  return window['go']['app']['App']['RestartNetworking']();
+}
+
 export function SendMessage(arg1, arg2, arg3, arg4) {
   return window['go']['app']['App']['SendMessage'](arg1, arg2, arg3, arg4);
+}
+
+export function SendPing(arg1) {
+  return window['go']['app']['App']['SendPing'](arg1);
 }
 
 export function SendSignal(arg1, arg2, arg3, arg4, arg5) {

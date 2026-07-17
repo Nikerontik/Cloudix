@@ -13,18 +13,18 @@ const (
 	EnvelopeTypeSignal         = "signal"
 	EnvelopeTypeTyping         = "typing"   // NEW: индикатор набора текста
 	EnvelopeTypeReaction       = "reaction" // NEW: реакции на сообщения
+	EnvelopeTypePing           = "ping"     // NEW: замер задержки
+	EnvelopeTypePong           = "pong"     // NEW: ответ на ping
 )
 
 const (
-	SignalKindOffer              = "offer"
-	SignalKindAnswer             = "answer"
-	SignalKindICE                = "ice"
-	SignalKindEnd                = "end"
-	SignalKindReject             = "reject"
-	SignalKindRenegotiateOffer   = "renegotiate-offer"
-	SignalKindRenegotiateAnswer  = "renegotiate-answer"
-	SignalKindScreenShareStarted = "screen-share-started" // NEW
-	SignalKindScreenShareStopped = "screen-share-stopped"
+	SignalKindOffer             = "offer"
+	SignalKindAnswer            = "answer"
+	SignalKindICE               = "ice"
+	SignalKindEnd               = "end"
+	SignalKindReject            = "reject"
+	SignalKindRenegotiateOffer  = "renegotiate-offer"
+	SignalKindRenegotiateAnswer = "renegotiate-answer"
 )
 
 type Profile struct {
@@ -124,6 +124,10 @@ type TypingPayload struct {
 	IsTyping bool `json:"isTyping"`
 }
 
+type PingPayload struct {
+	SentAt int64 `json:"sentAt"`
+}
+
 // NEW: реакция на сообщение
 type ReactionPayload struct {
 	MessageID string `json:"messageId"`
@@ -138,9 +142,7 @@ func IsAllowedSignalKind(kind string) bool {
 		SignalKindEnd,
 		SignalKindReject,
 		SignalKindRenegotiateOffer,
-		SignalKindRenegotiateAnswer,
-		SignalKindScreenShareStarted, // NEW
-		SignalKindScreenShareStopped:
+		SignalKindRenegotiateAnswer:
 		return true
 	default:
 		return false
