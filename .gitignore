@@ -1,0 +1,33 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Wails build output
+build/bin/
+build/darwin/*.app
+
+# Frontend
+node_modules/
+frontend/dist/
+frontend/node_modules/
+package.json.md5
+
+# Env / secrets
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Wails misc
+frontend/wailsjs/**/*.d.ts.map
