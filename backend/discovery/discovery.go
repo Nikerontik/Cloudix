@@ -15,7 +15,7 @@ const (
 	multicastAddr = "239.255.42.99:47990"
 	announceEvery = 2 * time.Second
 	peerTTL       = 8 * time.Second
-	staleTTL      = 60 * time.Second // FIX: держим "протухших" пиров дольше для сигналов звонков
+	staleTTL      = 60 * time.Second
 )
 
 type announcePacket struct {
@@ -27,24 +27,59 @@ type announcePacket struct {
 
 type Service struct {
 	mu         sync.RWMutex
-	peers      map[string]*models.Peer // "живые" (в пределах peerTTL)
-	stalePeers map[string]*models.Peer // FIX: последняя известная запись, живёт дольше
+	peers      map[string]*models.Peer
+	stalePeers map[string]*models.Peer
 	tcpPort    int
 	getProfile func() *models.Profile
 	onChange   func()
 	stopCh     chan struct{}
 	stopOnce   sync.Once
+
+	// NEW: unicast-fallback для сетей, где multicast не проходит (VPN-туннели
+	// типа Radmin/Hamachi). manualTargets — IP-адреса, куда параллельно с
+	// multicast-рассылкой отправляются те же announce-пакеты через обычный
+	// unicast UDP. unicastConn слушает входящие unicast-анонсы на том же
+	// порту, что и multicast-группа.
+	manualTargets   map[string]string // key: "ip:port" -> "ip:port" (для дедупликации)
+	manualTargetsMu sync.RWMutex
 }
 
 func NewService(tcpPort int, getProfile func() *models.Profile, onChange func()) *Service {
 	return &Service{
-		peers:      make(map[string]*models.Peer),
-		stalePeers: make(map[string]*models.Peer),
-		tcpPort:    tcpPort,
-		getProfile: getProfile,
-		onChange:   onChange,
-		stopCh:     make(chan struct{}),
+		peers:         make(map[string]*models.Peer),
+		stalePeers:    make(map[string]*models.Peer),
+		tcpPort:       tcpPort,
+		getProfile:    getProfile,
+		onChange:      onChange,
+		stopCh:        make(chan struct{}),
+		manualTargets: make(map[string]string),
 	}
+}
+
+// AddManualTarget регистрирует IP:порт собеседника для unicast-анонсов.
+// Используется, когда пользователь вручную вводит адрес пира (или когда
+// мы автоматически подхватываем src.IP из уже установленного TCP-соединения
+// — см. App.handleEnvelope). Дублирующий адрес просто игнорируется.
+func (s *Service) AddManualTarget(addr string) {
+	s.manualTargetsMu.Lock()
+	s.manualTargets[addr] = addr
+	s.manualTargetsMu.Unlock()
+}
+
+func (s *Service) RemoveManualTarget(addr string) {
+	s.manualTargetsMu.Lock()
+	delete(s.manualTargets, addr)
+	s.manualTargetsMu.Unlock()
+}
+
+func (s *Service) listManualTargets() []string {
+	s.manualTargetsMu.RLock()
+	defer s.manualTargetsMu.RUnlock()
+	out := make([]string, 0, len(s.manualTargets))
+	for _, v := range s.manualTargets {
+		out = append(out, v)
+	}
+	return out
 }
 
 func (s *Service) Start() error {
@@ -53,6 +88,7 @@ func (s *Service) Start() error {
 		return err
 	}
 	go s.listenLoop(groupAddr)
+	go s.unicastListenLoop() // NEW
 	go s.announceLoop(groupAddr)
 	go s.expireLoop()
 	return nil
@@ -76,29 +112,28 @@ func (s *Service) Restart() error {
 	return s.Start()
 }
 
-// FIX: рассылаем прощание несколько раз, но не удаляем stalePeers у других –
-// это выполняется на стороне получателя автоматически при получении TCPPort == -1.
 func (s *Service) AnnounceGoodbye(profile *models.Profile) {
 	if profile == nil {
 		return
 	}
-	groupAddr, err := net.ResolveUDPAddr("udp4", multicastAddr)
-	if err != nil {
-		return
-	}
-	conn, err := net.DialUDP("udp4", nil, groupAddr)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-
 	pkt := announcePacket{PeerID: profile.PeerID, TCPPort: -1}
 	data, _ := json.Marshal(pkt)
-	_, _ = conn.Write(data)
-	time.Sleep(50 * time.Millisecond)
-	_, _ = conn.Write(data)
-	time.Sleep(50 * time.Millisecond)
-	_, _ = conn.Write(data)
+
+	// Multicast goodbye (как было)
+	groupAddr, err := net.ResolveUDPAddr("udp4", multicastAddr)
+	if err == nil {
+		if conn, derr := net.DialUDP("udp4", nil, groupAddr); derr == nil {
+			for i := 0; i < 3; i++ {
+				_, _ = conn.Write(data)
+				time.Sleep(50 * time.Millisecond)
+			}
+			_ = conn.Close()
+		}
+	}
+
+	// NEW: unicast goodbye на все известные ручные адреса — важно, чтобы
+	// собеседник через VPN узнал о выходе, а не ждал протухания по TTL.
+	s.sendUnicastToAll(data)
 }
 
 func (s *Service) UpdatePeerProfile(peerID, name, username, bio, avatar string) {
@@ -134,6 +169,72 @@ func joinExtraInterfaces(pconn *ipv4.PacketConn, groupIP net.IP) {
 	}
 }
 
+// processAnnouncePacket — общая логика обработки входящего announce-пакета,
+// вынесена в отдельную функцию, чтобы использоваться и multicast-, и
+// unicast-listener'ом без дублирования кода.
+func (s *Service) processAnnouncePacket(buf []byte, n int, srcIP net.IP) {
+	var pkt announcePacket
+	if err := json.Unmarshal(buf[:n], &pkt); err != nil {
+		return
+	}
+	if pkt.PeerID == "" {
+		return
+	}
+	profile := s.getProfile()
+	if profile != nil && pkt.PeerID == profile.PeerID {
+		return
+	}
+
+	if pkt.TCPPort == -1 {
+		s.mu.Lock()
+		_, existed := s.peers[pkt.PeerID]
+		delete(s.peers, pkt.PeerID)
+		s.mu.Unlock()
+		if existed && s.onChange != nil {
+			s.onChange()
+		}
+		return
+	}
+
+	now := time.Now().Unix()
+	changed := false
+	s.mu.Lock()
+	existing, ok := s.peers[pkt.PeerID]
+	if ok {
+		if existing.Name != pkt.Name || existing.Username != pkt.Username || existing.IP != srcIP.String() || existing.Port != pkt.TCPPort {
+			changed = true
+		}
+		existing.Name = pkt.Name
+		existing.Username = pkt.Username
+		existing.IP = srcIP.String()
+		existing.Port = pkt.TCPPort
+		existing.LastSeen = now
+	} else {
+		newPeer := &models.Peer{
+			PeerID:   pkt.PeerID,
+			Name:     pkt.Name,
+			Username: pkt.Username,
+			IP:       srcIP.String(),
+			Port:     pkt.TCPPort,
+			LastSeen: now,
+		}
+		if stale, staleOk := s.stalePeers[pkt.PeerID]; staleOk {
+			newPeer.Bio = stale.Bio
+			newPeer.Avatar = stale.Avatar
+		}
+		s.peers[pkt.PeerID] = newPeer
+		changed = true
+	}
+
+	stale := *s.peers[pkt.PeerID]
+	s.stalePeers[pkt.PeerID] = &stale
+	s.mu.Unlock()
+
+	if changed && s.onChange != nil {
+		s.onChange()
+	}
+}
+
 func (s *Service) listenLoop(groupAddr *net.UDPAddr) {
 	conn, err := net.ListenMulticastUDP("udp4", nil, groupAddr)
 	if err != nil {
@@ -165,74 +266,70 @@ func (s *Service) listenLoop(groupAddr *net.UDPAddr) {
 					continue
 				}
 			}
-
-			var pkt announcePacket
-			if err := json.Unmarshal(buf[:n], &pkt); err != nil {
-				continue
-			}
-			if pkt.PeerID == "" {
-				continue
-			}
-			profile := s.getProfile()
-			if profile != nil && pkt.PeerID == profile.PeerID {
-				continue
-			}
-
-			if pkt.TCPPort == -1 {
-				// FIX: goodbye убирает из "живых", но оставляет в stalePeers
-				// для дальнейшей возможности доставки end/reject сигналов.
-				s.mu.Lock()
-				_, existed := s.peers[pkt.PeerID]
-				delete(s.peers, pkt.PeerID)
-				s.mu.Unlock()
-				if existed && s.onChange != nil {
-					s.onChange()
-				}
-				continue
-			}
-
-			now := time.Now().Unix()
-			changed := false
-			s.mu.Lock()
-			existing, ok := s.peers[pkt.PeerID]
-			if ok {
-				if existing.Name != pkt.Name || existing.Username != pkt.Username || existing.IP != src.IP.String() || existing.Port != pkt.TCPPort {
-					changed = true
-				}
-				existing.Name = pkt.Name
-				existing.Username = pkt.Username
-				existing.IP = src.IP.String()
-				existing.Port = pkt.TCPPort
-				existing.LastSeen = now
-			} else {
-				newPeer := &models.Peer{
-					PeerID:   pkt.PeerID,
-					Name:     pkt.Name,
-					Username: pkt.Username,
-					Bio:      "",
-					Avatar:   "",
-					IP:       src.IP.String(),
-					Port:     pkt.TCPPort,
-					LastSeen: now,
-				}
-				// FIX: если у нас уже была stale-запись, наследуем bio/avatar
-				if stale, staleOk := s.stalePeers[pkt.PeerID]; staleOk {
-					newPeer.Bio = stale.Bio
-					newPeer.Avatar = stale.Avatar
-				}
-				s.peers[pkt.PeerID] = newPeer
-				changed = true
-			}
-
-			// FIX: всегда обновляем/создаём stale-копию с текущим временем
-			stale := *s.peers[pkt.PeerID]
-			s.stalePeers[pkt.PeerID] = &stale
-
-			s.mu.Unlock()
-			if changed && s.onChange != nil {
-				s.onChange()
-			}
+			s.processAnnouncePacket(buf, n, src.IP)
 		}
+	}
+}
+
+// NEW: unicastListenLoop слушает обычные (не multicast) UDP-пакеты на том
+// же порту 47990. Это позволяет получать announce-пакеты, отправленные
+// напрямую через VPN-туннель (Radmin, Hamachi и т.п.), где multicast не
+// форвардится, но обычный unicast UDP проходит нормально.
+func (s *Service) unicastListenLoop() {
+	addr, err := net.ResolveUDPAddr("udp4", ":47990")
+	if err != nil {
+		return
+	}
+	conn, err := net.ListenUDP("udp4", addr)
+	if err != nil {
+		// Порт уже занят multicast-listener'ом на некоторых ОС — это
+		// нормально, тогда unicast-пакеты, приходящие на групповой адрес,
+		// уже обрабатываются в listenLoop. Но на большинстве систем
+		// SO_REUSEADDR позволяет держать оба listener'а параллельно.
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetReadBuffer(1 << 20)
+
+	buf := make([]byte, 65536)
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		default:
+			_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			n, src, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					continue
+				}
+				select {
+				case <-s.stopCh:
+					return
+				default:
+					continue
+				}
+			}
+			s.processAnnouncePacket(buf, n, src.IP)
+		}
+	}
+}
+
+// NEW: sendUnicastToAll отправляет уже сериализованный пакет на все
+// зарегистрированные вручную адреса пиров.
+func (s *Service) sendUnicastToAll(data []byte) {
+	targets := s.listManualTargets()
+	for _, addr := range targets {
+		udpAddr, err := net.ResolveUDPAddr("udp4", addr)
+		if err != nil {
+			continue
+		}
+		conn, err := net.DialUDP("udp4", nil, udpAddr)
+		if err != nil {
+			continue
+		}
+		_, _ = conn.Write(data)
+		_ = conn.Close()
 	}
 }
 
@@ -259,11 +356,10 @@ func (s *Service) announceLoop(groupAddr *net.UDPAddr) {
 			return
 		}
 		_, _ = conn.Write(data)
+		// NEW: параллельно шлём тот же пакет unicast'ом на все ручные адреса.
+		s.sendUnicastToAll(data)
 	}
 
-	// Immediate burst on start so a late-joining client is discovered
-	// quickly instead of waiting up to announceEvery for the first tick,
-	// and to compensate for occasional UDP packet loss.
 	for i := 0; i < 3; i++ {
 		sendAnnounce()
 		time.Sleep(150 * time.Millisecond)
@@ -298,7 +394,6 @@ func (s *Service) expireLoop() {
 					changed = true
 				}
 			}
-			// FIX: чистим совсем старые stale-записи, чтобы не расти бесконечно
 			for id, p := range s.stalePeers {
 				if now-p.LastSeen > int64(staleTTL.Seconds()) {
 					delete(s.stalePeers, id)
@@ -322,7 +417,6 @@ func (s *Service) ListPeers() []models.Peer {
 	return out
 }
 
-// GetPeer возвращает только "живого" (онлайн) пира.
 func (s *Service) GetPeer(peerID string) (models.Peer, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -333,9 +427,6 @@ func (s *Service) GetPeer(peerID string) (models.Peer, bool) {
 	return *p, true
 }
 
-// GetPeerEvenIfStale FIX: используется для сигналов конца звонка (end/reject),
-// чтобы они доходили даже если UDP-анонс временно не пришёл, а TCP соединение
-// с пиром всё ещё установлено или переустановится по последнему известному адресу.
 func (s *Service) GetPeerEvenIfStale(peerID string) (models.Peer, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

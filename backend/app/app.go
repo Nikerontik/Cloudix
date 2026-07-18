@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -57,7 +58,18 @@ func (a *App) OnStartup(ctx context.Context) {
 	}
 	a.setProfile(loaded)
 
-	a.transport = transport.NewManager(a.handleEnvelope)
+	// FIX: NewManager теперь принимает второй аргумент — колбэк onPeerAddr.
+	// Он вызывается из transport.readLoop сразу после регистрации нового
+	// TCP-соединения по SenderID и передаёт реальный remote-IP пира.
+	// Это позволяет discovery узнать адрес собеседника даже если multicast
+	// discovery не работает (например, через Radmin VPN), и начать слать
+	// туда unicast-анонсы — так решается проблема "Windows видит Mac, а
+	// Mac не видит Windows".
+	a.transport = transport.NewManager(a.handleEnvelope, func(peerID, ip string) {
+		if a.discovery != nil {
+			a.discovery.AddManualTarget(net.JoinHostPort(ip, "47990"))
+		}
+	})
 	port, err := a.transport.Start()
 	if err != nil {
 		runtime.LogErrorf(ctx, "transport.Start failed: %v", err)
@@ -220,7 +232,15 @@ func (a *App) Logout() error {
 	}
 	a.store = store
 
-	a.transport = transport.NewManager(a.handleEnvelope)
+	// FIX: та же новая сигнатура NewManager, что и в OnStartup — нужна
+	// после повторной инициализации транспорта при логауте, иначе
+	// unicast-fallback discovery работал бы только до первого выхода
+	// из аккаунта.
+	a.transport = transport.NewManager(a.handleEnvelope, func(peerID, ip string) {
+		if a.discovery != nil {
+			a.discovery.AddManualTarget(net.JoinHostPort(ip, "47990"))
+		}
+	})
 	port, err := a.transport.Start()
 	if err != nil {
 		return fmt.Errorf("transport.Start: %w", err)
@@ -515,6 +535,49 @@ func (a *App) ListBlocked() []string {
 	return list
 }
 
+// NEW: AddManualPeer позволяет пользователю вручную зарегистрировать адрес
+// собеседника (IP или IP:порт), когда multicast-обнаружение не работает —
+// например, через Radmin VPN/Hamachi, которые обычно не форвардят
+// multicast-трафик между узлами. После вызова discovery начинает слать
+// announce-пакеты unicast'ом на этот адрес параллельно с multicast-рассылкой,
+// и наоборот — слушает входящие unicast-анонсы с этого адреса.
+func (a *App) AddManualPeer(ipOrAddr string) error {
+	if a.discovery == nil {
+		return fmt.Errorf("discovery not initialized")
+	}
+	if ipOrAddr == "" {
+		return fmt.Errorf("address is required")
+	}
+
+	addr := ipOrAddr
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		// пользователь ввёл просто IP без порта — используем порт discovery по умолчанию
+		addr = net.JoinHostPort(ipOrAddr, "47990")
+	}
+
+	a.discovery.AddManualTarget(addr)
+	return nil
+}
+
+// NEW: RemoveManualPeer убирает вручную добавленный адрес из списка
+// unicast-целей discovery.
+func (a *App) RemoveManualPeer(ipOrAddr string) error {
+	if a.discovery == nil {
+		return fmt.Errorf("discovery not initialized")
+	}
+	if ipOrAddr == "" {
+		return fmt.Errorf("address is required")
+	}
+
+	addr := ipOrAddr
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		addr = net.JoinHostPort(ipOrAddr, "47990")
+	}
+
+	a.discovery.RemoveManualTarget(addr)
+	return nil
+}
+
 // FIX: главная причина фриза UI при приёме/совершении звонка. SendSignal —
 // bound-метод, вызываемый СИНХРОННО из фронта через Wails JS-мост. Раньше
 // a.transport.Send(...) (который внутри может делать net.Dial с таймаутом
@@ -524,6 +587,23 @@ func (a *App) ListBlocked() []string {
 // синхронной (она быстрая, без сети), а сама сетевая отправка уходит в
 // отдельную горутину — метод возвращается фронту немедленно, а об ошибке
 // отправки фронт узнаёт через асинхронное событие "signal:send_error".
+//
+// FIX 2: раньше проверка "peer известен" опиралась ИСКЛЮЧИТЕЛЬНО на
+// discovery (GetPeerEvenIfStale), который строится на UDP multicast.
+// Если multicast работает только в одну сторону (частый случай через
+// Radmin VPN/Hamachi-подобные туннели, которые обычно не пропускают
+// multicast вовсе, или macOS/Windows firewall режет входящие анонсы),
+// то входящий offer от пира может успешно дойти по уже установленному
+// TCP-соединению (transport.Manager регистрирует SenderID в readLoop),
+// но discovery при этом НЕ знает про этого пира вообще — ни как online,
+// ни как stale. В таком случае GetPeerEvenIfStale возвращал !ok, и
+// SendSignal("answer", ...) при нажатии "Принять" сразу фейлился с
+// "peer not found", даже не пытаясь отправить ответ через уже открытый
+// сокет. Теперь, если discovery не знает пира, но transport.HasConn(peerID)
+// подтверждает наличие открытого соединения, используем "пустышку"
+// models.Peer{PeerID: peerID} — transport.Send/getConn всё равно найдёт
+// реальное соединение по peer.PeerID в своей мапе и не будет пытаться
+// делать новый Dial по IP/порту (которых у нас и так нет в этом случае).
 func (a *App) SendSignal(peerID, callID, kind, data string, video bool) error {
 	if a.discovery == nil {
 		return fmt.Errorf("discovery not initialized")
@@ -553,7 +633,16 @@ func (a *App) SendSignal(peerID, callID, kind, data string, video bool) error {
 	// если UDP-анонс временно не пришёл (см. комментарий в discovery.go).
 	peer, ok := a.discovery.GetPeerEvenIfStale(peerID)
 	if !ok {
-		return fmt.Errorf("peer %s not found in local network", peerID)
+		// FIX 2: discovery ничего не знает о пире (например, multicast
+		// не доходит через VPN только в эту сторону), но если TCP-канал
+		// с этим пиром уже открыт и зарегистрирован — этого достаточно
+		// для ответа, IP/порт из discovery не нужны.
+		if a.transport.HasConn(peerID) {
+			peer = models.Peer{PeerID: peerID}
+			ok = true
+		} else {
+			return fmt.Errorf("peer %s not found in local network", peerID)
+		}
 	}
 
 	payload, err := json.Marshal(models.SignalPayload{
@@ -591,7 +680,7 @@ func (a *App) SendSignal(peerID, callID, kind, data string, video bool) error {
 
 // NEW: индикатор "печатает…". Идёт отдельным конвертом (не через SendSignal,
 // чтобы не иметь callID и не пересекаться с логикой звонков), но на фронте
-// приходит через тот же канал "signal:incoming" с kind == "typing".
+// приходит через тот же канал "signal:incoming", с kind == "typing".
 func (a *App) SendTyping(peerID string, isTyping bool) error {
 	if a.discovery == nil || a.transport == nil {
 		return fmt.Errorf("discovery/transport not initialized")

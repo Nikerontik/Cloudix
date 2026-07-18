@@ -18,12 +18,14 @@ type Manager struct {
 	listener   net.Listener
 	port       int
 	onEnvelope func(models.WireEnvelope)
+	onPeerAddr func(peerID, ip string) // NEW
 }
 
-func NewManager(onEnvelope func(models.WireEnvelope)) *Manager {
+func NewManager(onEnvelope func(models.WireEnvelope), onPeerAddr func(peerID, ip string)) *Manager {
 	return &Manager{
 		conns:      make(map[string]net.Conn),
 		onEnvelope: onEnvelope,
+		onPeerAddr: onPeerAddr,
 	}
 }
 
@@ -97,6 +99,22 @@ func (m *Manager) readLoop(conn net.Conn) {
 			m.conns[env.SenderID] = conn
 			m.mu.Unlock()
 			registeredPeerID = env.SenderID
+			if env.SenderID != "" && registeredPeerID == "" {
+				m.mu.Lock()
+				if old, exists := m.conns[env.SenderID]; exists && old != conn {
+					_ = old.Close()
+				}
+				m.conns[env.SenderID] = conn
+				m.mu.Unlock()
+				registeredPeerID = env.SenderID
+
+				// ВСТАВКА СЮДА:
+				if m.onPeerAddr != nil {
+					if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+						m.onPeerAddr(env.SenderID, tcpAddr.IP.String())
+					}
+				}
+			}
 		}
 
 		if m.onEnvelope != nil {
@@ -111,6 +129,20 @@ func (m *Manager) readLoop(conn net.Conn) {
 	if err := scanner.Err(); err != nil {
 		_ = err // соединение закрывается в defer; ошибку можно залогировать при необходимости
 	}
+}
+
+// HasConn сообщает, есть ли уже открытое и зарегистрированное TCP-соединение
+// с указанным пиром. FIX: используется в SendSignal как fallback, когда
+// discovery ещё/уже не знает пира (например, multicast-анонс не доходит
+// через VPN в одну сторону), но входящее TCP-соединение от этого пира уже
+// установлено и зарегистрировано в readLoop по SenderID из envelope.
+// В таком случае можно отвечать через существующий сокет без нового Dial
+// по IP/порту из discovery, который может быть недостижим или устаревшим.
+func (m *Manager) HasConn(peerID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.conns[peerID]
+	return ok
 }
 
 func (m *Manager) getConn(peer models.Peer) (net.Conn, error) {

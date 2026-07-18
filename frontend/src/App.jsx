@@ -718,6 +718,18 @@ function CallModal({
   const handleSignal = async (payload) => {
     if (payload.callId !== callId || closedRef.current) return;
 
+    // FIX: асинхронная ошибка отправки сигнала (SendSignal теперь
+    // выполняет реальную сетевую отправку в горутине на Go-стороне и
+    // возвращается немедленно; если отправка всё же не удалась —
+    // ошибка приходит сюда как отдельное событие с kind "send_error",
+    // а не как rejected promise). Раньше при недостижимости пира кнопка
+    // "Принять" выглядела так, будто она "ничего не делает".
+    if (payload.kind === "send_error") {
+      console.error("Signal send failed:", payload);
+      setErrorText("Не удалось отправить сигнал собеседнику. Проверьте сеть/VPN.");
+      return;
+    }
+
     if (payload.kind === "reject" || payload.kind === "end") {
       cleanupCall(false);
       return;
@@ -797,8 +809,16 @@ function CallModal({
       await attachRemoteStream();
       await refreshRemoteVideoUi();
     } catch (err) {
+      // FIX: раньше ошибка (например, отклонённый промис от SendSignal,
+      // если Go-метод синхронно вернул "peer not found") тихо логировалась
+      // в консоль и НИЧЕГО не показывала пользователю — кнопка "Принять"
+      // выглядела нерабочей, хотя на самом деле клик обрабатывался и падал
+      // молча. Теперь ошибка отображается в call-status.
       console.error("startConnection failed:", err);
       startedRef.current = false;
+      setErrorText(
+        "Не удалось соединиться с собеседником. Проверьте сеть/VPN и повторите попытку."
+      );
     }
   };
 
@@ -933,7 +953,6 @@ function CallModal({
         )}
       </motion.div>
     </motion.div>
-
   );
 }
 

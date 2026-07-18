@@ -3,6 +3,8 @@
 import {models} from '../models';
 import {context} from '../models';
 
+export function AddManualPeer(arg1:string):Promise<void>;
+
 export function BlockPeer(arg1:string):Promise<void>;
 
 export function DeleteChat(arg1:string):Promise<void>;
@@ -28,6 +30,8 @@ export function OnBeforeClose(arg1:context.Context):Promise<boolean>;
 export function ReactToMessage(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function Register(arg1:string,arg2:string,arg3:string,arg4:string):Promise<models.Profile>;
+
+export function RemoveManualPeer(arg1:string):Promise<void>;
 
 export function RestartNetworking():Promise<void>;
 
