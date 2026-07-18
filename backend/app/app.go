@@ -42,6 +42,95 @@ func (a *App) setProfile(p *models.Profile) {
 	a.profileMu.Unlock()
 }
 
+func (a *App) emitEvent(name string, payload interface{}) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.EventsEmit(a.ctx, name, payload)
+}
+
+func genPeerID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return "P-" + hex.EncodeToString(b)
+}
+
+func (a *App) resolvePeer(peerID string) (models.Peer, bool) {
+	if a.discovery == nil {
+		return models.Peer{}, false
+	}
+	if peer, ok := a.discovery.GetPeerEvenIfStale(peerID); ok {
+		return peer, true
+	}
+	if a.transport != nil && a.transport.HasConn(peerID) {
+		return models.Peer{PeerID: peerID}, true
+	}
+	return models.Peer{}, false
+}
+
+func (a *App) onNewPeerDiscovered(peerID string) {
+	if a.discovery == nil || a.transport == nil {
+		return
+	}
+	myProfile := a.getProfile()
+	if myProfile == nil || peerID == "" || peerID == myProfile.PeerID {
+		return
+	}
+
+	peer, ok := a.discovery.GetPeerEvenIfStale(peerID)
+	if !ok {
+		return
+	}
+
+	payload, err := json.Marshal(models.AvatarRequestPayload{})
+	if err != nil {
+		if a.ctx != nil {
+			runtime.LogErrorf(a.ctx, "marshal AvatarRequestPayload failed: %v", err)
+		}
+		return
+	}
+
+	go func() {
+		if err := a.transport.Send(peer, models.WireEnvelope{
+			Type:     models.EnvelopeTypeAvatarRequest,
+			SenderID: myProfile.PeerID,
+			Payload:  payload,
+		}); err != nil && a.ctx != nil {
+			runtime.LogErrorf(a.ctx, "auto avatar_request to %s failed: %v", peerID, err)
+		}
+	}()
+}
+
+func (a *App) initNetworking() error {
+	a.transport = transport.NewManager(a.handleEnvelope, func(peerID, ip string) {
+		if a.discovery != nil {
+			a.discovery.AddManualTarget(net.JoinHostPort(ip, "47990"))
+		}
+	})
+
+	port, err := a.transport.Start()
+	if err != nil {
+		return fmt.Errorf("transport.Start: %w", err)
+	}
+
+	a.discovery = discovery.NewService(
+		port,
+		a.getProfile,
+		func() {
+			if a.ctx != nil && a.discovery != nil {
+				runtime.EventsEmit(a.ctx, "peers:update", a.discovery.ListPeers())
+			}
+		},
+		a.onNewPeerDiscovered,
+	)
+
+	if err := a.discovery.Start(); err != nil {
+		return fmt.Errorf("discovery.Start: %w", err)
+	}
+
+	return nil
+}
+
 func (a *App) OnStartup(ctx context.Context) {
 	a.ctx = ctx
 
@@ -58,35 +147,9 @@ func (a *App) OnStartup(ctx context.Context) {
 	}
 	a.setProfile(loaded)
 
-	// FIX: NewManager теперь принимает второй аргумент — колбэк onPeerAddr.
-	// Он вызывается из transport.readLoop сразу после регистрации нового
-	// TCP-соединения по SenderID и передаёт реальный remote-IP пира.
-	// Это позволяет discovery узнать адрес собеседника даже если multicast
-	// discovery не работает (например, через Radmin VPN), и начать слать
-	// туда unicast-анонсы — так решается проблема "Windows видит Mac, а
-	// Mac не видит Windows".
-	a.transport = transport.NewManager(a.handleEnvelope, func(peerID, ip string) {
-		if a.discovery != nil {
-			a.discovery.AddManualTarget(net.JoinHostPort(ip, "47990"))
-		}
-	})
-	port, err := a.transport.Start()
-	if err != nil {
-		runtime.LogErrorf(ctx, "transport.Start failed: %v", err)
+	if err := a.initNetworking(); err != nil {
+		runtime.LogErrorf(ctx, "initNetworking failed: %v", err)
 		return
-	}
-
-	a.discovery = discovery.NewService(
-		port,
-		a.getProfile,
-		func() {
-			if a.ctx != nil && a.discovery != nil {
-				runtime.EventsEmit(a.ctx, "peers:update", a.discovery.ListPeers())
-			}
-		},
-	)
-	if err := a.discovery.Start(); err != nil {
-		runtime.LogErrorf(ctx, "discovery.Start failed: %v", err)
 	}
 }
 
@@ -107,19 +170,6 @@ func (a *App) OnBeforeClose(ctx context.Context) bool {
 		}
 	}
 	return false
-}
-
-func genPeerID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return "P-" + hex.EncodeToString(b)
-}
-
-func (a *App) emitEvent(name string, payload interface{}) {
-	if a.ctx == nil {
-		return
-	}
-	runtime.EventsEmit(a.ctx, name, payload)
 }
 
 func (a *App) GetProfile() *models.Profile { return a.getProfile() }
@@ -199,7 +249,7 @@ func (a *App) Logout() error {
 	if profile != nil && a.discovery != nil && a.transport != nil {
 		chats, _ := oldStore.ListChats(profile.PeerID)
 		for _, c := range chats {
-			if peer, ok := a.discovery.GetPeer(c.PeerID); ok {
+			if peer, ok := a.resolvePeer(c.PeerID); ok {
 				_ = a.transport.Send(peer, models.WireEnvelope{
 					Type:     models.EnvelopeTypeAccountDeleted,
 					SenderID: profile.PeerID,
@@ -232,43 +282,13 @@ func (a *App) Logout() error {
 	}
 	a.store = store
 
-	// FIX: та же новая сигнатура NewManager, что и в OnStartup — нужна
-	// после повторной инициализации транспорта при логауте, иначе
-	// unicast-fallback discovery работал бы только до первого выхода
-	// из аккаунта.
-	a.transport = transport.NewManager(a.handleEnvelope, func(peerID, ip string) {
-		if a.discovery != nil {
-			a.discovery.AddManualTarget(net.JoinHostPort(ip, "47990"))
-		}
-	})
-	port, err := a.transport.Start()
-	if err != nil {
-		return fmt.Errorf("transport.Start: %w", err)
-	}
-
-	a.discovery = discovery.NewService(
-		port,
-		a.getProfile,
-		func() {
-			if a.ctx != nil && a.discovery != nil {
-				runtime.EventsEmit(a.ctx, "peers:update", a.discovery.ListPeers())
-			}
-		},
-	)
-	if err := a.discovery.Start(); err != nil {
-		return fmt.Errorf("discovery.Start: %w", err)
+	if err := a.initNetworking(); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-// FIX: раньше метод назывался GetDiscoveredPeers, а фронт вызывал
-// WailsApp.GetOnlinePeers (проверка typeof тихо проваливалась). Это была
-// главная причина бага "новорег не видит уже онлайн собеседника" — весь
-// повторный polling из App.jsx (таймеры 400мс..6с) не делал ничего, а
-// единственное событие peers:update, отправленное ДО регистрации, терялось,
-// потому что React-слушатель этого события подписывается только после
-// появления профиля.
 func (a *App) GetOnlinePeers() []models.Peer {
 	if a.discovery == nil || a.store == nil {
 		return []models.Peer{}
@@ -353,8 +373,8 @@ func (a *App) SendMessage(peerID, text, mediaKind, mediaData string) (*models.Me
 		runtime.LogErrorf(a.ctx, "TouchChatLastMessage failed: %v", err)
 	}
 
-	if a.discovery != nil && a.transport != nil {
-		if peer, ok := a.discovery.GetPeer(peerID); ok {
+	if a.transport != nil {
+		if peer, ok := a.resolvePeer(peerID); ok {
 			payload, err := json.Marshal(models.MessagePayload{
 				ID:        msg.ID,
 				Text:      text,
@@ -398,8 +418,8 @@ func (a *App) MarkChatRead(peerID string) error {
 		return nil
 	}
 
-	if a.discovery != nil && a.transport != nil {
-		if peer, ok := a.discovery.GetPeer(peerID); ok {
+	if a.transport != nil {
+		if peer, ok := a.resolvePeer(peerID); ok {
 			payload, err := json.Marshal(models.ReadReceiptPayload{MessageIDs: ids})
 			if err != nil {
 				return fmt.Errorf("marshal ReadReceiptPayload: %w", err)
@@ -434,8 +454,8 @@ func (a *App) DeleteMessage(peerID, id, mode string) error {
 		return fmt.Errorf("SoftDeleteMessage: %w", err)
 	}
 
-	if forBoth && a.discovery != nil && a.transport != nil {
-		if peer, ok := a.discovery.GetPeer(peerID); ok {
+	if forBoth && a.transport != nil {
+		if peer, ok := a.resolvePeer(peerID); ok {
 			payload, err := json.Marshal(models.DeletePayload{ID: id, Mode: mode})
 			if err == nil {
 				_ = a.transport.Send(peer, models.WireEnvelope{
@@ -479,8 +499,8 @@ func (a *App) StartChatWithPeer(peerID, name, username, bio, avatar string) erro
 		return fmt.Errorf("UpsertChatMeta: %w", err)
 	}
 
-	if a.discovery != nil && a.transport != nil {
-		if peer, ok := a.discovery.GetPeer(peerID); ok {
+	if a.transport != nil {
+		if peer, ok := a.resolvePeer(peerID); ok {
 			payload, err := json.Marshal(models.AvatarRequestPayload{})
 			if err == nil {
 				_ = a.transport.Send(peer, models.WireEnvelope{
@@ -535,12 +555,6 @@ func (a *App) ListBlocked() []string {
 	return list
 }
 
-// NEW: AddManualPeer позволяет пользователю вручную зарегистрировать адрес
-// собеседника (IP или IP:порт), когда multicast-обнаружение не работает —
-// например, через Radmin VPN/Hamachi, которые обычно не форвардят
-// multicast-трафик между узлами. После вызова discovery начинает слать
-// announce-пакеты unicast'ом на этот адрес параллельно с multicast-рассылкой,
-// и наоборот — слушает входящие unicast-анонсы с этого адреса.
 func (a *App) AddManualPeer(ipOrAddr string) error {
 	if a.discovery == nil {
 		return fmt.Errorf("discovery not initialized")
@@ -551,7 +565,6 @@ func (a *App) AddManualPeer(ipOrAddr string) error {
 
 	addr := ipOrAddr
 	if _, _, err := net.SplitHostPort(addr); err != nil {
-		// пользователь ввёл просто IP без порта — используем порт discovery по умолчанию
 		addr = net.JoinHostPort(ipOrAddr, "47990")
 	}
 
@@ -559,8 +572,6 @@ func (a *App) AddManualPeer(ipOrAddr string) error {
 	return nil
 }
 
-// NEW: RemoveManualPeer убирает вручную добавленный адрес из списка
-// unicast-целей discovery.
 func (a *App) RemoveManualPeer(ipOrAddr string) error {
 	if a.discovery == nil {
 		return fmt.Errorf("discovery not initialized")
@@ -578,32 +589,6 @@ func (a *App) RemoveManualPeer(ipOrAddr string) error {
 	return nil
 }
 
-// FIX: главная причина фриза UI при приёме/совершении звонка. SendSignal —
-// bound-метод, вызываемый СИНХРОННО из фронта через Wails JS-мост. Раньше
-// a.transport.Send(...) (который внутри может делать net.Dial с таймаутом
-// в несколько секунд, если TCP-соединение с пиром разорвано) выполнялся
-// прямо в этом вызове и держал в блоке весь мост, из-за чего весь UI
-// зависал на время до ответа/таймаута Dial. Теперь валидация остаётся
-// синхронной (она быстрая, без сети), а сама сетевая отправка уходит в
-// отдельную горутину — метод возвращается фронту немедленно, а об ошибке
-// отправки фронт узнаёт через асинхронное событие "signal:send_error".
-//
-// FIX 2: раньше проверка "peer известен" опиралась ИСКЛЮЧИТЕЛЬНО на
-// discovery (GetPeerEvenIfStale), который строится на UDP multicast.
-// Если multicast работает только в одну сторону (частый случай через
-// Radmin VPN/Hamachi-подобные туннели, которые обычно не пропускают
-// multicast вовсе, или macOS/Windows firewall режет входящие анонсы),
-// то входящий offer от пира может успешно дойти по уже установленному
-// TCP-соединению (transport.Manager регистрирует SenderID в readLoop),
-// но discovery при этом НЕ знает про этого пира вообще — ни как online,
-// ни как stale. В таком случае GetPeerEvenIfStale возвращал !ok, и
-// SendSignal("answer", ...) при нажатии "Принять" сразу фейлился с
-// "peer not found", даже не пытаясь отправить ответ через уже открытый
-// сокет. Теперь, если discovery не знает пира, но transport.HasConn(peerID)
-// подтверждает наличие открытого соединения, используем "пустышку"
-// models.Peer{PeerID: peerID} — transport.Send/getConn всё равно найдёт
-// реальное соединение по peer.PeerID в своей мапе и не будет пытаться
-// делать новый Dial по IP/порту (которых у нас и так нет в этом случае).
 func (a *App) SendSignal(peerID, callID, kind, data string, video bool) error {
 	if a.discovery == nil {
 		return fmt.Errorf("discovery not initialized")
@@ -628,21 +613,9 @@ func (a *App) SendSignal(peerID, callID, kind, data string, video bool) error {
 		return fmt.Errorf("cannot send signal to self")
 	}
 
-	// FIX: используем GetPeerEvenIfStale, а не GetPeer — сигналы конца
-	// звонка (end/reject) и ответ на входящий звонок должны доходить даже
-	// если UDP-анонс временно не пришёл (см. комментарий в discovery.go).
-	peer, ok := a.discovery.GetPeerEvenIfStale(peerID)
+	peer, ok := a.resolvePeer(peerID)
 	if !ok {
-		// FIX 2: discovery ничего не знает о пире (например, multicast
-		// не доходит через VPN только в эту сторону), но если TCP-канал
-		// с этим пиром уже открыт и зарегистрирован — этого достаточно
-		// для ответа, IP/порт из discovery не нужны.
-		if a.transport.HasConn(peerID) {
-			peer = models.Peer{PeerID: peerID}
-			ok = true
-		} else {
-			return fmt.Errorf("peer %s not found in local network", peerID)
-		}
+		return fmt.Errorf("peer %s not found in local network", peerID)
 	}
 
 	payload, err := json.Marshal(models.SignalPayload{
@@ -678,9 +651,6 @@ func (a *App) SendSignal(peerID, callID, kind, data string, video bool) error {
 	return nil
 }
 
-// NEW: индикатор "печатает…". Идёт отдельным конвертом (не через SendSignal,
-// чтобы не иметь callID и не пересекаться с логикой звонков), но на фронте
-// приходит через тот же канал "signal:incoming", с kind == "typing".
 func (a *App) SendTyping(peerID string, isTyping bool) error {
 	if a.discovery == nil || a.transport == nil {
 		return fmt.Errorf("discovery/transport not initialized")
@@ -696,9 +666,8 @@ func (a *App) SendTyping(peerID string, isTyping bool) error {
 		return nil
 	}
 
-	peer, ok := a.discovery.GetPeer(peerID)
+	peer, ok := a.resolvePeer(peerID)
 	if !ok {
-		// Пир мог выйти из сети — это не ошибка, просто нечего отправлять.
 		return nil
 	}
 
@@ -707,8 +676,6 @@ func (a *App) SendTyping(peerID string, isTyping bool) error {
 		return fmt.Errorf("marshal TypingPayload: %w", err)
 	}
 
-	// FIX: как и SendSignal, отправка индикатора печати не должна блокировать
-	// UI — это некритичный сигнал, потеря/задержка которого не страшна.
 	transportMgr := a.transport
 	senderID := profile.PeerID
 	go func() {
@@ -725,21 +692,27 @@ func (a *App) SendTyping(peerID string, isTyping bool) error {
 }
 
 func (a *App) SendPing(peerID string) error {
-	peer, ok := a.discovery.GetPeer(peerID)
+	if a.transport == nil {
+		return fmt.Errorf("transport not initialized")
+	}
+	profile := a.getProfile()
+	if profile == nil {
+		return fmt.Errorf("no active profile")
+	}
+
+	peer, ok := a.resolvePeer(peerID)
 	if !ok {
 		return fmt.Errorf("peer %s not found", peerID)
 	}
 	payload, _ := json.Marshal(models.PingPayload{SentAt: time.Now().UnixMilli()})
 	env := models.WireEnvelope{
 		Type:     models.EnvelopeTypePing,
-		SenderID: a.profile.PeerID,
+		SenderID: profile.PeerID,
 		Payload:  payload,
 	}
 	return a.transport.Send(peer, env)
 }
 
-// NEW: реакции на сообщения. Сохраняем локально сразу (оптимистично на
-// фронте это уже сделано), затем рассылаем собеседнику, если он в сети.
 func (a *App) ReactToMessage(peerID, messageID, emoji string) error {
 	if a.store == nil {
 		return fmt.Errorf("store not initialized")
@@ -756,11 +729,11 @@ func (a *App) ReactToMessage(peerID, messageID, emoji string) error {
 		return fmt.Errorf("SetMessageReaction: %w", err)
 	}
 
-	if peerID == "" || a.discovery == nil || a.transport == nil {
+	if peerID == "" || a.transport == nil {
 		return nil
 	}
 
-	peer, ok := a.discovery.GetPeer(peerID)
+	peer, ok := a.resolvePeer(peerID)
 	if !ok {
 		return nil
 	}
@@ -795,7 +768,6 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 	if profile != nil && env.SenderID == profile.PeerID {
 		return
 	}
-
 	if a.store.IsBlocked(env.SenderID) && env.Type != models.EnvelopeTypeAccountDeleted {
 		return
 	}
@@ -805,23 +777,25 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		var p models.PingPayload
 		_ = json.Unmarshal(env.Payload, &p)
 		pong, _ := json.Marshal(models.PingPayload{SentAt: p.SentAt})
-		peer, ok := a.discovery.GetPeer(env.SenderID)
-		if ok {
-			_ = a.transport.Send(peer, models.WireEnvelope{
-				Type:     models.EnvelopeTypePong,
-				SenderID: a.profile.PeerID,
-				Payload:  pong,
-			})
+		if a.transport != nil {
+			if peer, ok := a.resolvePeer(env.SenderID); ok && profile != nil {
+				_ = a.transport.Send(peer, models.WireEnvelope{
+					Type:     models.EnvelopeTypePong,
+					SenderID: profile.PeerID,
+					Payload:  pong,
+				})
+			}
 		}
 
 	case models.EnvelopeTypePong:
 		var p models.PingPayload
 		_ = json.Unmarshal(env.Payload, &p)
 		rtt := time.Now().UnixMilli() - p.SentAt
-		runtime.EventsEmit(a.ctx, "ping:result", map[string]interface{}{
+		a.emitEvent("ping:result", map[string]interface{}{
 			"peerId": env.SenderID,
 			"ms":     rtt,
 		})
+
 	case models.EnvelopeTypeMessage:
 		var p models.MessagePayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
@@ -842,7 +816,7 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		}
 
 		if a.discovery != nil {
-			if peer, ok := a.discovery.GetPeer(env.SenderID); ok {
+			if peer, ok := a.discovery.GetPeerEvenIfStale(env.SenderID); ok {
 				_ = a.store.UpsertChatMeta(env.SenderID, peer.Name, peer.Username, peer.Bio, peer.Avatar)
 			}
 		}
@@ -903,9 +877,6 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 			"ids":    p.MessageIDs,
 		})
 
-	// NEW: индикатор "печатает…". Эмитим через тот же общий канал
-	// signal:incoming, с kind == "typing" — фронт (App.jsx onSignalIncoming)
-	// перехватывает эту ветку раньше, чем логику звонков.
 	case models.EnvelopeTypeTyping:
 		var p models.TypingPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
@@ -920,7 +891,6 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 			"data":   mustMarshalTyping(p),
 		})
 
-	// NEW: реакция от собеседника.
 	case models.EnvelopeTypeReaction:
 		var p models.ReactionPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
@@ -961,14 +931,14 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		})
 
 	case models.EnvelopeTypeAvatarRequest:
-		if a.transport == nil || a.discovery == nil {
+		if a.transport == nil {
 			return
 		}
 		myProfile := a.getProfile()
 		if myProfile == nil {
 			return
 		}
-		if peer, ok := a.discovery.GetPeer(env.SenderID); ok {
+		if peer, ok := a.resolvePeer(env.SenderID); ok {
 			payload, err := json.Marshal(models.AvatarResponsePayload{
 				Name:     myProfile.Name,
 				Username: myProfile.Username,

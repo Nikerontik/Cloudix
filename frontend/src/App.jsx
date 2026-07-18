@@ -380,7 +380,6 @@ function MediaViewer({ item, onClose }) {
         ) : (
           <img src={item.mediaData} alt="" className="media-viewer-media" />
         )}
-
         <div className="media-viewer-actions">
           <a href={item.mediaData} download={fileName} className="theme-toggle">
             ⬇ Скачать
@@ -1483,17 +1482,17 @@ export default function App() {
   const [lang, setLang] = useState("ru");
   const [isMaximized, setIsMaximized] = useState(false);
 
-useEffect(() => {
-  const checkMaximized = () => {
-    const maximized =
-      window.innerWidth >= window.screen.availWidth &&
-      window.innerHeight >= window.screen.availHeight;
-    setIsMaximized(maximized);
-  };
-  checkMaximized();
-  window.addEventListener("resize", checkMaximized);
-  return () => window.removeEventListener("resize", checkMaximized);
-}, []);
+  useEffect(() => {
+    const checkMaximized = () => {
+      const maximized =
+        window.innerWidth >= window.screen.availWidth &&
+        window.innerHeight >= window.screen.availHeight;
+      setIsMaximized(maximized);
+    };
+    checkMaximized();
+    window.addEventListener("resize", checkMaximized);
+    return () => window.removeEventListener("resize", checkMaximized);
+  }, []);
   const t = useT(lang);
 
   const [profile, setProfileState] = useState(null);
@@ -1503,37 +1502,37 @@ useEffect(() => {
   const [blocked, setBlocked] = useState([]);
 
   // NEW: локальный чат "Избранное" — хранится в localStorage, не трогает бэкенд
-const [savedMessages, setSavedMessages] = useState([]);
-const savedLoadedRef = useRef(false);
+  const [savedMessages, setSavedMessages] = useState([]);
+  const savedLoadedRef = useRef(false);
 
-useEffect(() => {
-  savedLoadedRef.current = false;
-  if (!profile?.peerId) {
-    setSavedMessages([]);
-    savedLoadedRef.current = true;
-    return;
-  }
-  try {
-    const raw = localStorage.getItem(savedStorageKey(profile.peerId));
-    setSavedMessages(raw ? JSON.parse(raw) : []);
-  } catch {
-    setSavedMessages([]);
-  } finally {
-    savedLoadedRef.current = true;
-  }
-}, [profile?.peerId]);
+  useEffect(() => {
+    savedLoadedRef.current = false;
+    if (!profile?.peerId) {
+      setSavedMessages([]);
+      savedLoadedRef.current = true;
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(savedStorageKey(profile.peerId));
+      setSavedMessages(raw ? JSON.parse(raw) : []);
+    } catch {
+      setSavedMessages([]);
+    } finally {
+      savedLoadedRef.current = true;
+    }
+  }, [profile?.peerId]);
 
-useEffect(() => {
-  if (!profile?.peerId) return;
-  if (!savedLoadedRef.current) return;
-  try {
-    localStorage.setItem(savedStorageKey(profile.peerId), JSON.stringify(savedMessages));
-  } catch {}
-}, [savedMessages, profile?.peerId]);
+  useEffect(() => {
+    if (!profile?.peerId) return;
+    if (!savedLoadedRef.current) return;
+    try {
+      localStorage.setItem(savedStorageKey(profile.peerId), JSON.stringify(savedMessages));
+    } catch {}
+  }, [savedMessages, profile?.peerId]);
 
-// NEW: индикатор "печатает…" по каждому пиру
-const [typingByPeer, setTypingByPeer] = useState({});
-const [pingByPeer, setPingByPeer] = useState({});
+  // NEW: индикатор "печатает…" по каждому пиру
+  const [typingByPeer, setTypingByPeer] = useState({});
+  const [pingByPeer, setPingByPeer] = useState({});
 
   const [tab, setTab] = useState("all");
   const [search, setSearch] = useState("");
@@ -1724,7 +1723,7 @@ const [pingByPeer, setPingByPeer] = useState({});
       }));
     });
 
-        const cancelPing = EventsOn("ping:result", ({ peerId, ms } = {}) => {
+    const cancelPing = EventsOn("ping:result", ({ peerId, ms } = {}) => {
       if (!peerId) return;
       setPingByPeer((prev) => ({ ...prev, [peerId]: ms }));
     });
@@ -1778,27 +1777,39 @@ const [pingByPeer, setPingByPeer] = useState({});
 
     const cancelSignal = EventsOn("signal:incoming", onSignalIncoming);
 
-const netCheck = () => {
-  if (typeof navigator !== "undefined" && "onLine" in navigator) {
-    if (!navigator.onLine) {
-      setConnStatus("reconnecting");
-      setOnlinePeersRaw([]);
-    } else {
-      // FIX: простого navigator.onLine недостаточно — Go-стороне нужно
-      // заново привязать multicast UDP listener к новому сетевому интерфейсу,
-      // иначе discovery молча остаётся мёртвым при видимом "connected".
-      setConnStatus("connected");
-      WailsApp.RestartNetworking()
-        .then(() => {
-          refreshOnlinePeers();
-          refreshChats();
-        })
-        .catch((err) => {
-          console.error("RestartNetworking failed:", err);
-        });
-    }
-  }
-};
+    // FIX: backend отправляет ошибку неудачной доставки сигнала как
+    // ОТДЕЛЬНОЕ событие "signal:send_error" (см. app.go SendSignal — Send
+    // выполняется в горутине, и при ошибке emitEvent идёт именно под этим
+    // именем, а не через "signal:incoming"). Раньше этот listener не был
+    // зарегистрирован вовсе, поэтому CallModal.handleSignal никогда не
+    // получал kind === "send_error", и кнопка "Принять"/звонок при
+    // недостижимом пире выглядели так, будто ничего не происходит.
+    const cancelSignalError = EventsOn("signal:send_error", (payload = {}) => {
+      console.error("signal:send_error", payload);
+      signalHandlersRef.current.forEach((h) => h({ ...payload, kind: "send_error" }));
+    });
+
+    const netCheck = () => {
+      if (typeof navigator !== "undefined" && "onLine" in navigator) {
+        if (!navigator.onLine) {
+          setConnStatus("reconnecting");
+          setOnlinePeersRaw([]);
+        } else {
+          // FIX: простого navigator.onLine недостаточно — Go-стороне нужно
+          // заново привязать multicast UDP listener к новому сетевому интерфейсу,
+          // иначе discovery молча остаётся мёртвым при видимом "connected".
+          setConnStatus("connected");
+          WailsApp.RestartNetworking()
+            .then(() => {
+              refreshOnlinePeers();
+              refreshChats();
+            })
+            .catch((err) => {
+              console.error("RestartNetworking failed:", err);
+            });
+        }
+      }
+    };
 
     window.addEventListener("offline", netCheck);
     window.addEventListener("online", netCheck);
@@ -1813,6 +1824,7 @@ const netCheck = () => {
       cancelProfileUpdated?.();
       cancelAccountDeleted?.();
       cancelSignal?.();
+      cancelSignalError?.();
       window.removeEventListener("offline", netCheck);
       window.removeEventListener("online", netCheck);
     };
@@ -2083,8 +2095,8 @@ const netCheck = () => {
   if (!profile) return <Onboarding onDone={(p) => { setProfileState(p); setShowDisclaimer(true); }} />;
   if (showDisclaimer) return <DisclaimerModal onDismiss={() => setShowDisclaimer(false)} />;
 
-    return (
-      <div className={"app-root " + (isMaximized ? "maximized" : "")}>
+  return (
+    <div className={"app-root " + (isMaximized ? "maximized" : "")}>
       <div className="titlebar" />
       <div className="app-shell">
         <Sidebar

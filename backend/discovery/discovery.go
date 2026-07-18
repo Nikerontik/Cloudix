@@ -13,6 +13,7 @@ import (
 
 const (
 	multicastAddr = "239.255.42.99:47990"
+	udpPort       = "47990"
 	announceEvery = 2 * time.Second
 	peerTTL       = 8 * time.Second
 	staleTTL      = 60 * time.Second
@@ -22,6 +23,7 @@ type announcePacket struct {
 	PeerID   string `json:"peerId"`
 	Name     string `json:"name"`
 	Username string `json:"username"`
+	Bio      string `json:"bio"` // FIX: bio теперь едет прямо в анонсе, а не только через отдельный avatar-обмен
 	TCPPort  int    `json:"tcpPort"`
 }
 
@@ -32,34 +34,27 @@ type Service struct {
 	tcpPort    int
 	getProfile func() *models.Profile
 	onChange   func()
+	onNewPeer  func(peerID string) // NEW: авто-синхронизация профиля при первом обнаружении пира
 	stopCh     chan struct{}
 	stopOnce   sync.Once
 
-	// NEW: unicast-fallback для сетей, где multicast не проходит (VPN-туннели
-	// типа Radmin/Hamachi). manualTargets — IP-адреса, куда параллельно с
-	// multicast-рассылкой отправляются те же announce-пакеты через обычный
-	// unicast UDP. unicastConn слушает входящие unicast-анонсы на том же
-	// порту, что и multicast-группа.
-	manualTargets   map[string]string // key: "ip:port" -> "ip:port" (для дедупликации)
+	manualTargets   map[string]string
 	manualTargetsMu sync.RWMutex
 }
 
-func NewService(tcpPort int, getProfile func() *models.Profile, onChange func()) *Service {
+func NewService(tcpPort int, getProfile func() *models.Profile, onChange func(), onNewPeer func(peerID string)) *Service {
 	return &Service{
 		peers:         make(map[string]*models.Peer),
 		stalePeers:    make(map[string]*models.Peer),
 		tcpPort:       tcpPort,
 		getProfile:    getProfile,
 		onChange:      onChange,
+		onNewPeer:     onNewPeer,
 		stopCh:        make(chan struct{}),
 		manualTargets: make(map[string]string),
 	}
 }
 
-// AddManualTarget регистрирует IP:порт собеседника для unicast-анонсов.
-// Используется, когда пользователь вручную вводит адрес пира (или когда
-// мы автоматически подхватываем src.IP из уже установленного TCP-соединения
-// — см. App.handleEnvelope). Дублирующий адрес просто игнорируется.
 func (s *Service) AddManualTarget(addr string) {
 	s.manualTargetsMu.Lock()
 	s.manualTargets[addr] = addr
@@ -88,7 +83,7 @@ func (s *Service) Start() error {
 		return err
 	}
 	go s.listenLoop(groupAddr)
-	go s.unicastListenLoop() // NEW
+	go s.unicastListenLoop()
 	go s.announceLoop(groupAddr)
 	go s.expireLoop()
 	return nil
@@ -119,7 +114,6 @@ func (s *Service) AnnounceGoodbye(profile *models.Profile) {
 	pkt := announcePacket{PeerID: profile.PeerID, TCPPort: -1}
 	data, _ := json.Marshal(pkt)
 
-	// Multicast goodbye (как было)
 	groupAddr, err := net.ResolveUDPAddr("udp4", multicastAddr)
 	if err == nil {
 		if conn, derr := net.DialUDP("udp4", nil, groupAddr); derr == nil {
@@ -131,8 +125,6 @@ func (s *Service) AnnounceGoodbye(profile *models.Profile) {
 		}
 	}
 
-	// NEW: unicast goodbye на все известные ручные адреса — важно, чтобы
-	// собеседник через VPN узнал о выходе, а не ждал протухания по TTL.
 	s.sendUnicastToAll(data)
 }
 
@@ -169,9 +161,14 @@ func joinExtraInterfaces(pconn *ipv4.PacketConn, groupIP net.IP) {
 	}
 }
 
-// processAnnouncePacket — общая логика обработки входящего announce-пакета,
-// вынесена в отдельную функцию, чтобы использоваться и multicast-, и
-// unicast-listener'ом без дублирования кода.
+// FIX (главный фикс асимметрии Windows/Mac): при получении ЛЮБОГО валидного
+// анонса (multicast или unicast) мы сразу регистрируем IP отправителя как
+// manualTarget для unicast-рассылки. Раньше unicast-fallback заполнялся
+// только вручную либо после уже установленного TCP-соединения — из-за этого,
+// если multicast работал только в одну сторону (частый случай на смешанных
+// сетях/VPN-адаптерах), сторона, которая НЕ может достучаться multicast'ом,
+// никогда не узнавала, что её всё-таки видят, и не начинала слать unicast
+// в ответ. Теперь достаточно, чтобы хотя бы один анонс дошёл в любую сторону.
 func (s *Service) processAnnouncePacket(buf []byte, n int, srcIP net.IP) {
 	var pkt announcePacket
 	if err := json.Unmarshal(buf[:n], &pkt); err != nil {
@@ -196,31 +193,38 @@ func (s *Service) processAnnouncePacket(buf []byte, n int, srcIP net.IP) {
 		return
 	}
 
+	s.AddManualTarget(net.JoinHostPort(srcIP.String(), udpPort))
+
 	now := time.Now().Unix()
 	changed := false
+	isNew := false
 	s.mu.Lock()
 	existing, ok := s.peers[pkt.PeerID]
 	if ok {
-		if existing.Name != pkt.Name || existing.Username != pkt.Username || existing.IP != srcIP.String() || existing.Port != pkt.TCPPort {
+		if existing.Name != pkt.Name || existing.Username != pkt.Username || existing.Bio != pkt.Bio || existing.IP != srcIP.String() || existing.Port != pkt.TCPPort {
 			changed = true
 		}
 		existing.Name = pkt.Name
 		existing.Username = pkt.Username
+		existing.Bio = pkt.Bio
 		existing.IP = srcIP.String()
 		existing.Port = pkt.TCPPort
 		existing.LastSeen = now
 	} else {
+		isNew = true
 		newPeer := &models.Peer{
 			PeerID:   pkt.PeerID,
 			Name:     pkt.Name,
 			Username: pkt.Username,
+			Bio:      pkt.Bio,
 			IP:       srcIP.String(),
 			Port:     pkt.TCPPort,
 			LastSeen: now,
 		}
 		if stale, staleOk := s.stalePeers[pkt.PeerID]; staleOk {
-			newPeer.Bio = stale.Bio
-			newPeer.Avatar = stale.Avatar
+			if newPeer.Avatar == "" {
+				newPeer.Avatar = stale.Avatar
+			}
 		}
 		s.peers[pkt.PeerID] = newPeer
 		changed = true
@@ -232,6 +236,9 @@ func (s *Service) processAnnouncePacket(buf []byte, n int, srcIP net.IP) {
 
 	if changed && s.onChange != nil {
 		s.onChange()
+	}
+	if isNew && s.onNewPeer != nil {
+		go s.onNewPeer(pkt.PeerID)
 	}
 }
 
@@ -271,21 +278,16 @@ func (s *Service) listenLoop(groupAddr *net.UDPAddr) {
 	}
 }
 
-// NEW: unicastListenLoop слушает обычные (не multicast) UDP-пакеты на том
-// же порту 47990. Это позволяет получать announce-пакеты, отправленные
-// напрямую через VPN-туннель (Radmin, Hamachi и т.п.), где multicast не
-// форвардится, но обычный unicast UDP проходит нормально.
+// NEW: unicastListenLoop слушает обычные (не multicast) UDP-пакеты на том же
+// порту 47990 — это позволяет принимать анонсы, отправленные напрямую через
+// VPN-туннель (Radmin, Hamachi и т.п.), где multicast обычно не форвардится.
 func (s *Service) unicastListenLoop() {
-	addr, err := net.ResolveUDPAddr("udp4", ":47990")
+	addr, err := net.ResolveUDPAddr("udp4", ":"+udpPort)
 	if err != nil {
 		return
 	}
 	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
-		// Порт уже занят multicast-listener'ом на некоторых ОС — это
-		// нормально, тогда unicast-пакеты, приходящие на групповой адрес,
-		// уже обрабатываются в listenLoop. Но на большинстве систем
-		// SO_REUSEADDR позволяет держать оба listener'а параллельно.
 		return
 	}
 	defer conn.Close()
@@ -315,8 +317,6 @@ func (s *Service) unicastListenLoop() {
 	}
 }
 
-// NEW: sendUnicastToAll отправляет уже сериализованный пакет на все
-// зарегистрированные вручную адреса пиров.
 func (s *Service) sendUnicastToAll(data []byte) {
 	targets := s.listManualTargets()
 	for _, addr := range targets {
@@ -349,6 +349,7 @@ func (s *Service) announceLoop(groupAddr *net.UDPAddr) {
 			PeerID:   profile.PeerID,
 			Name:     profile.Name,
 			Username: profile.Username,
+			Bio:      profile.Bio,
 			TCPPort:  s.tcpPort,
 		}
 		data, err := json.Marshal(pkt)
@@ -356,7 +357,6 @@ func (s *Service) announceLoop(groupAddr *net.UDPAddr) {
 			return
 		}
 		_, _ = conn.Write(data)
-		// NEW: параллельно шлём тот же пакет unicast'ом на все ручные адреса.
 		s.sendUnicastToAll(data)
 	}
 

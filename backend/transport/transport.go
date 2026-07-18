@@ -18,7 +18,7 @@ type Manager struct {
 	listener   net.Listener
 	port       int
 	onEnvelope func(models.WireEnvelope)
-	onPeerAddr func(peerID, ip string) // NEW
+	onPeerAddr func(peerID, ip string)
 }
 
 func NewManager(onEnvelope func(models.WireEnvelope), onPeerAddr func(peerID, ip string)) *Manager {
@@ -99,20 +99,10 @@ func (m *Manager) readLoop(conn net.Conn) {
 			m.conns[env.SenderID] = conn
 			m.mu.Unlock()
 			registeredPeerID = env.SenderID
-			if env.SenderID != "" && registeredPeerID == "" {
-				m.mu.Lock()
-				if old, exists := m.conns[env.SenderID]; exists && old != conn {
-					_ = old.Close()
-				}
-				m.conns[env.SenderID] = conn
-				m.mu.Unlock()
-				registeredPeerID = env.SenderID
 
-				// ВСТАВКА СЮДА:
-				if m.onPeerAddr != nil {
-					if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
-						m.onPeerAddr(env.SenderID, tcpAddr.IP.String())
-					}
+			if m.onPeerAddr != nil {
+				if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+					m.onPeerAddr(env.SenderID, tcpAddr.IP.String())
 				}
 			}
 		}
@@ -122,22 +112,11 @@ func (m *Manager) readLoop(conn net.Conn) {
 		}
 	}
 
-	// scanner.Err() проверяется после выхода из цикла Scan() — устраняет
-	// предупреждение линтера scannererr. Ошибка здесь не критична для
-	// работы (соединение просто закрывается и чистится в defer выше),
-	// но полезна для диагностики обрывов связи.
 	if err := scanner.Err(); err != nil {
-		_ = err // соединение закрывается в defer; ошибку можно залогировать при необходимости
+		_ = err
 	}
 }
 
-// HasConn сообщает, есть ли уже открытое и зарегистрированное TCP-соединение
-// с указанным пиром. FIX: используется в SendSignal как fallback, когда
-// discovery ещё/уже не знает пира (например, multicast-анонс не доходит
-// через VPN в одну сторону), но входящее TCP-соединение от этого пира уже
-// установлено и зарегистрировано в readLoop по SenderID из envelope.
-// В таком случае можно отвечать через существующий сокет без нового Dial
-// по IP/порту из discovery, который может быть недостижим или устаревшим.
 func (m *Manager) HasConn(peerID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -153,16 +132,8 @@ func (m *Manager) getConn(peer models.Peer) (net.Conn, error) {
 		return conn, nil
 	}
 
-	// net.JoinHostPort корректно оборачивает IPv6-адреса в квадратные
-	// скобки (например "[fe80::1]:4242"), в отличие от ручной склейки
-	// через fmt.Sprintf("%s:%d", ...), которая ломается на IPv6.
 	addr := net.JoinHostPort(peer.IP, strconv.Itoa(peer.Port))
 
-	// Явный таймаут критичен: без него net.Dial может висеть до нескольких
-	// минут, если peer недостижим (сменил сеть, упал, файрвол блокирует
-	// порт). Такой вызов, дошедший до синхронного bound-метода (например
-	// SendSignal при принятии звонка), без таймаута подвесил бы весь
-	// Wails JS-мост на всё время ожидания Dial.
 	dialer := net.Dialer{Timeout: 3 * time.Second}
 	newConn, err := dialer.Dial("tcp4", addr)
 	if err != nil {
@@ -199,8 +170,6 @@ func (m *Manager) Send(peer models.Peer, env models.WireEnvelope) error {
 	}
 
 	if err := m.sendOnConn(conn, env); err != nil {
-		// Соединение могло протухнуть (peer перезапустился, порт сменился и т.п.).
-		// Пробуем один раз переподключиться и повторить отправку.
 		m.mu.Lock()
 		if existing, exists := m.conns[peer.PeerID]; exists && existing == conn {
 			delete(m.conns, peer.PeerID)

@@ -11,10 +11,10 @@ const (
 	EnvelopeTypeAvatarResponse = "avatar_response"
 	EnvelopeTypeAccountDeleted = "account_deleted"
 	EnvelopeTypeSignal         = "signal"
-	EnvelopeTypeTyping         = "typing"   // NEW: индикатор набора текста
-	EnvelopeTypeReaction       = "reaction" // NEW: реакции на сообщения
-	EnvelopeTypePing           = "ping"     // NEW: замер задержки
-	EnvelopeTypePong           = "pong"     // NEW: ответ на ping
+	EnvelopeTypeTyping         = "typing"
+	EnvelopeTypeReaction       = "reaction"
+	EnvelopeTypePing           = "ping"
+	EnvelopeTypePong           = "pong"
 )
 
 const (
@@ -58,7 +58,7 @@ type Message struct {
 	DeletedForMe   bool   `json:"deletedForMe"`
 	DeletedForBoth bool   `json:"deletedForBoth"`
 	Read           bool   `json:"read"`
-	Reaction       string `json:"reaction,omitempty"` // NEW
+	Reaction       string `json:"reaction,omitempty"`
 }
 
 type Chat struct {
@@ -112,14 +112,21 @@ type ReadReceiptPayload struct {
 	MessageIDs []string `json:"messageIds"`
 }
 
+// FIX: добавлены Name/Username. Раньше при входящем звонке до момента полной
+// синхронизации профиля через discovery/avatar-обмен на экране входящего
+// звонка показывался PeerID вместо имени собеседника — потому что больше
+// негде было взять имя, если discovery ещё не знает пира (частый случай при
+// асимметричном multicast). Теперь имя/юзернейм звонящего едут прямо в
+// сигнале offer, независимо от состояния discovery.
 type SignalPayload struct {
-	CallID string `json:"callId"`
-	Kind   string `json:"kind"`
-	Data   string `json:"data"`
-	Video  bool   `json:"video"`
+	CallID   string `json:"callId"`
+	Kind     string `json:"kind"`
+	Data     string `json:"data"`
+	Video    bool   `json:"video"`
+	Name     string `json:"name,omitempty"`
+	Username string `json:"username,omitempty"`
 }
 
-// NEW: индикатор печатания
 type TypingPayload struct {
 	IsTyping bool `json:"isTyping"`
 }
@@ -128,10 +135,9 @@ type PingPayload struct {
 	SentAt int64 `json:"sentAt"`
 }
 
-// NEW: реакция на сообщение
 type ReactionPayload struct {
 	MessageID string `json:"messageId"`
-	Emoji     string `json:"emoji"` // пустая строка = снять реакцию
+	Emoji     string `json:"emoji"`
 }
 
 func IsAllowedSignalKind(kind string) bool {

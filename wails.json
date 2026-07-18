@@ -6,6 +6,6 @@
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "author": {
-    "name": "Practice_Gecko team"
+    "name": "Cloudix team"
   }
 }
