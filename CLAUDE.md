@@ -10,6 +10,16 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
+## Session state (2026-09-01)
+
+- Audit + fixes done and pushed to `dev` (`122fd83`, `2850e54`). Working tree clean.
+- **Next step (user):** test the app on **two separate machines** on the same LAN /
+  RadminVPN — messages, media, reactions, read receipts, typing, and especially **calls**
+  (calls don't complete between two instances on one Mac — see "Still open").
+- If asked to help debug a two-machine session: a `wails build -debug` build enables
+  devtools (right-click → Inspect) to read `iceConnectionState` / console logs.
+- Nothing half-finished in the code; the "Still open" list is deliberate deferrals.
+
 ## Stack
 
 - **Backend:** Go 1.25 (`go.mod` says `go 1.25.0`), Wails v2.13, SQLite via
@@ -50,8 +60,18 @@ cd frontend && npm run build           # frontend only; output frontend/dist is 
 
 There is no Go test suite yet. `go vet ./...` is clean.
 
-Run two local instances for P2P testing: set `CLOUDIX_INSTANCE=b` (env) to give the second
-one a separate DB dir (`storage.dbPath` honors it). Profiles/ports are otherwise per-machine.
+Run two local instances for P2P testing: give each a separate DB dir via
+`CLOUDIX_INSTANCE` (env, honored by `storage.dbPath` → `~/Library/Application Support/
+Cloudix-<val>/`), e.g.
+
+```bash
+BIN=build/bin/cloudix.app/Contents/MacOS/cloudix
+CLOUDIX_INSTANCE=a "$BIN" &
+CLOUDIX_INSTANCE=b "$BIN" &
+```
+
+Messages/media/etc. work this way; **calls do not connect between two instances on one
+machine** (ICE fails — see "Still open"). Real call testing needs two machines.
 
 ## Conventions
 
