@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"sync"
@@ -11,9 +12,12 @@ import (
 	"cloudix/backend/models"
 )
 
+// UDPPort is the shared discovery port (multicast announce + unicast fallback).
+const UDPPort = "47990"
+
 const (
-	multicastAddr = "239.255.42.99:47990"
-	udpPort       = "47990"
+	multicastAddr = "239.255.42.99:" + UDPPort
+	udpPort       = UDPPort
 	announceEvery = 2 * time.Second
 	peerTTL       = 8 * time.Second
 	staleTTL      = 60 * time.Second
@@ -35,8 +39,14 @@ type Service struct {
 	getProfile func() *models.Profile
 	onChange   func()
 	onNewPeer  func(peerID string) // NEW: авто-синхронизация профиля при первом обнаружении пира
-	stopCh     chan struct{}
-	stopOnce   sync.Once
+
+	// runMu serializes Start/Stop/Restart so stopCh/stopOnce are never
+	// swapped while another of those calls observes them. The loop goroutines
+	// capture their stop channel by value and never read s.stopCh directly,
+	// so a Restart cleanly retires the old generation.
+	runMu    sync.Mutex
+	stopCh   chan struct{}
+	stopOnce sync.Once
 
 	manualTargets   map[string]string
 	manualTargetsMu sync.RWMutex
@@ -78,25 +88,39 @@ func (s *Service) listManualTargets() []string {
 }
 
 func (s *Service) Start() error {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	return s.startLocked()
+}
+
+func (s *Service) startLocked() error {
 	groupAddr, err := net.ResolveUDPAddr("udp4", multicastAddr)
 	if err != nil {
 		return err
 	}
-	go s.listenLoop(groupAddr)
-	go s.unicastListenLoop()
-	go s.announceLoop(groupAddr)
-	go s.expireLoop()
+	stop := s.stopCh
+	go s.listenLoop(stop, groupAddr)
+	go s.unicastListenLoop(stop)
+	go s.announceLoop(stop, groupAddr)
+	go s.expireLoop(stop)
 	return nil
 }
 
 func (s *Service) Stop() {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
 	})
 }
 
 func (s *Service) Restart() error {
-	s.Stop()
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+	})
 	s.stopOnce = sync.Once{}
 	s.stopCh = make(chan struct{})
 
@@ -104,7 +128,7 @@ func (s *Service) Restart() error {
 	s.peers = make(map[string]*models.Peer)
 	s.mu.Unlock()
 
-	return s.Start()
+	return s.startLocked()
 }
 
 func (s *Service) AnnounceGoodbye(profile *models.Profile) {
@@ -242,7 +266,7 @@ func (s *Service) processAnnouncePacket(buf []byte, n int, srcIP net.IP) {
 	}
 }
 
-func (s *Service) listenLoop(groupAddr *net.UDPAddr) {
+func (s *Service) listenLoop(stop <-chan struct{}, groupAddr *net.UDPAddr) {
 	conn, err := net.ListenMulticastUDP("udp4", nil, groupAddr)
 	if err != nil {
 		return
@@ -257,7 +281,7 @@ func (s *Service) listenLoop(groupAddr *net.UDPAddr) {
 	buf := make([]byte, 65536)
 	for {
 		select {
-		case <-s.stopCh:
+		case <-stop:
 			return
 		default:
 			_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
@@ -267,7 +291,7 @@ func (s *Service) listenLoop(groupAddr *net.UDPAddr) {
 					continue
 				}
 				select {
-				case <-s.stopCh:
+				case <-stop:
 					return
 				default:
 					continue
@@ -281,13 +305,19 @@ func (s *Service) listenLoop(groupAddr *net.UDPAddr) {
 // NEW: unicastListenLoop слушает обычные (не multicast) UDP-пакеты на том же
 // порту 47990 — это позволяет принимать анонсы, отправленные напрямую через
 // VPN-туннель (Radmin, Hamachi и т.п.), где multicast обычно не форвардится.
-func (s *Service) unicastListenLoop() {
-	addr, err := net.ResolveUDPAddr("udp4", ":"+udpPort)
+func (s *Service) unicastListenLoop(stop <-chan struct{}) {
+	// SO_REUSEADDR/SO_REUSEPORT so this socket can share :47990 with the
+	// multicast listener above. Without it net.ListenUDP fails with "address
+	// already in use" on macOS/Windows and the whole unicast (VPN) discovery
+	// path silently never runs.
+	lc := net.ListenConfig{Control: reuseControl}
+	pc, err := lc.ListenPacket(context.Background(), "udp4", ":"+udpPort)
 	if err != nil {
 		return
 	}
-	conn, err := net.ListenUDP("udp4", addr)
-	if err != nil {
+	conn, ok := pc.(*net.UDPConn)
+	if !ok {
+		_ = pc.Close()
 		return
 	}
 	defer conn.Close()
@@ -296,7 +326,7 @@ func (s *Service) unicastListenLoop() {
 	buf := make([]byte, 65536)
 	for {
 		select {
-		case <-s.stopCh:
+		case <-stop:
 			return
 		default:
 			_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
@@ -306,7 +336,7 @@ func (s *Service) unicastListenLoop() {
 					continue
 				}
 				select {
-				case <-s.stopCh:
+				case <-stop:
 					return
 				default:
 					continue
@@ -333,7 +363,7 @@ func (s *Service) sendUnicastToAll(data []byte) {
 	}
 }
 
-func (s *Service) announceLoop(groupAddr *net.UDPAddr) {
+func (s *Service) announceLoop(stop <-chan struct{}, groupAddr *net.UDPAddr) {
 	conn, err := net.DialUDP("udp4", nil, groupAddr)
 	if err != nil {
 		return
@@ -369,7 +399,7 @@ func (s *Service) announceLoop(groupAddr *net.UDPAddr) {
 	defer ticker.Stop()
 	for {
 		select {
-		case <-s.stopCh:
+		case <-stop:
 			return
 		case <-ticker.C:
 			sendAnnounce()
@@ -377,12 +407,12 @@ func (s *Service) announceLoop(groupAddr *net.UDPAddr) {
 	}
 }
 
-func (s *Service) expireLoop() {
+func (s *Service) expireLoop(stop <-chan struct{}) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-s.stopCh:
+		case <-stop:
 			return
 		case <-ticker.C:
 			now := time.Now().Unix()

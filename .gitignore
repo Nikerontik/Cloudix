@@ -30,4 +30,8 @@ Thumbs.db
 .idea/
 
 # Wails misc
-frontend/wailsjs/**/*.d.ts.map/cloudix
+frontend/wailsjs/**/*.d.ts.map
+
+# Compiled binary (built via `wails build`)
+/cloudix
+/cloudix.exe

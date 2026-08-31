@@ -7,6 +7,11 @@ import { EventsOn, WindowIsMaximised } from "../wailsjs/runtime/runtime";
 const REACTIONS = ["👍", "❤️", "🔥", "😂", "👎"];
 const SAVED_CHAT_ID = "__saved__";
 const savedStorageKey = (peerId) => "cloudix:saved-messages:" + (peerId || "anon");
+// Keep in sync with transport.maxLineBytes on the Go side (base64 inflates ~33%).
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+const sortByTs = (arr) =>
+  [...arr].sort((a, b) => (a?.ts || 0) - (b?.ts || 0));
 
 function Avatar({ name, avatar, size = "", onClick, online }) {
   return (
@@ -23,7 +28,7 @@ function Avatar({ name, avatar, size = "", onClick, online }) {
   );
 }
 
-function Onboarding({ onDone }) {
+function Onboarding({ onDone, t }) {
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
   const [bio, setBio] = useState("");
@@ -35,6 +40,10 @@ function Onboarding({ onDone }) {
   const pickAvatar = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setError(t.attachTooLarge);
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => setAvatar(reader.result);
     reader.readAsDataURL(file);
@@ -53,7 +62,7 @@ function Onboarding({ onDone }) {
       onDone(profile);
     } catch (err) {
       console.error("Register failed:", err);
-      setError("Не удалось создать профиль. Попробуйте снова.");
+      setError(t.onboarding.error);
     } finally {
       setBusy(false);
     }
@@ -90,9 +99,7 @@ function Onboarding({ onDone }) {
         </motion.div>
 
         <h1 className="onboarding-title">Cloudix</h1>
-        <p className="onboarding-sub">
-          Локальный P2P-мессенджер без сервера. Создайте профиль, чтобы начать общение в вашей сети.
-        </p>
+        <p className="onboarding-sub">{t.onboarding.subtitle}</p>
 
         <div
           className="onboarding-avatar-pick"
@@ -113,33 +120,33 @@ function Onboarding({ onDone }) {
         />
 
         <div className="onboarding-field">
-          <label>Имя</label>
+          <label>{t.onboarding.name}</label>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Как вас называть?"
+            placeholder={t.onboarding.namePlaceholder}
             autoFocus
           />
         </div>
 
         <div className="onboarding-field">
-          <label>Юзернейм</label>
+          <label>{t.onboarding.username}</label>
           <input
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            placeholder="@username"
+            placeholder={t.onboarding.usernamePlaceholder}
           />
         </div>
 
         <div className="onboarding-field">
-          <label>О себе (необязательно)</label>
+          <label>{t.onboarding.bio}</label>
           <input
             type="text"
             value={bio}
             onChange={(e) => setBio(e.target.value)}
-            placeholder="Пара слов о себе"
+            placeholder={t.onboarding.bioPlaceholder}
           />
         </div>
 
@@ -152,14 +159,14 @@ function Onboarding({ onDone }) {
           whileTap={{ scale: 0.96 }}
           onClick={finish}
         >
-          {busy ? "Создаём…" : "Начать общение"}
+          {busy ? t.onboarding.creating : t.onboarding.start}
         </motion.button>
       </motion.div>
     </div>
   );
 }
 
-function DisclaimerModal({ onDismiss }) {
+function DisclaimerModal({ onDismiss, t }) {
   return (
     <div className="onboarding-root">
       <div className="onboarding-titlebar" />
@@ -170,17 +177,14 @@ function DisclaimerModal({ onDismiss }) {
         transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
       >
         <h1 className="onboarding-title">Cloudix</h1>
-        <p className="onboarding-sub">
-          Это первая версия приложения. Возможны баги и нестабильная работа —
-          спасибо за понимание!
-        </p>
+        <p className="onboarding-sub">{t.disclaimer.text}</p>
         <motion.button
           type="button"
           className="onboarding-btn"
           whileTap={{ scale: 0.96 }}
           onClick={onDismiss}
         >
-          Понятно, продолжить
+          {t.disclaimer.ok}
         </motion.button>
       </motion.div>
     </div>
@@ -255,9 +259,9 @@ function Sidebar({
         <div className="chat-list">
           {onlinePeers.length === 0 && (
             <div className="empty-hint">
-              Никого не найдено в локальной сети.
+              {t.noPeersTitle}
               <br />
-              Проверьте подключение к Wi‑Fi.
+              {t.noPeersHint}
             </div>
           )}
           {onlinePeers.map((p) => (
@@ -270,7 +274,9 @@ function Sidebar({
               <Avatar name={p.name} avatar={p.avatar} online />
               <div className="chat-meta">
                 <div className="chat-title">{p.name}</div>
-                <div className="chat-preview">{p.username} · найден в сети</div>
+                <div className="chat-preview">
+                  {p.username} · {t.foundInNetwork}
+                </div>
               </div>
             </motion.div>
           ))}
@@ -279,9 +285,9 @@ function Sidebar({
         <div className="chat-list">
           {filtered.length === 0 && (
             <div className="empty-hint">
-              Нет активных чатов.
+              {t.noChatsTitle}
               <br />
-              Найдите собеседника во вкладке "В сети".
+              {t.noChatsHint}
             </div>
           )}
           {filtered.map((c) => {
@@ -315,10 +321,12 @@ function Sidebar({
                   <div className="chat-title">
                     {isPinned && <span className="pin-icon">📌 </span>}
                     {c.title}
-                    {c.deleted && <span className="deleted-tag"> · аккаунт удалён</span>}
+                    {c.deleted && (
+                      <span className="deleted-tag"> · {t.accountDeletedTag}</span>
+                    )}
                   </div>
                   <div className={"chat-preview " + (isTyping ? "typing-preview" : "")}>
-                    {isTyping ? "печатает…" : c.preview || "Нет сообщений"}
+                    {isTyping ? t.typing : c.preview || t.chatPreviewEmpty}
                   </div>
                 </div>
                 {c.unread > 0 && (
@@ -355,7 +363,7 @@ function ConnectionBadge({ status, t }) {
 
 // NEW: полноэкранный просмотр фото/видео с возможностью скачивания.
 // Используется и из чата (клик по вложению), и из вкладки "Медиа".
-function MediaViewer({ item, onClose }) {
+function MediaViewer({ item, onClose, t }) {
   if (!item) return null;
   const isVideo = item.mediaKind === "video";
   const fileName = "cloudix-media-" + (item.id || Date.now()) + (isVideo ? ".webm" : ".png");
@@ -382,10 +390,10 @@ function MediaViewer({ item, onClose }) {
         )}
         <div className="media-viewer-actions">
           <a href={item.mediaData} download={fileName} className="theme-toggle">
-            ⬇ Скачать
+            ⬇ {t.mediaViewer.download}
           </a>
           <button type="button" className="theme-toggle" onClick={onClose}>
-            Закрыть
+            {t.mediaViewer.close}
           </button>
         </div>
       </motion.div>
@@ -483,6 +491,21 @@ function CallModal({
   const politeRef = useRef(!isCaller);
   const closedRef = useRef(false);
   const localVideoSenderRef = useRef(null);
+  const disconnectTimerRef = useRef(null);
+
+  const drainPendingIce = async () => {
+    const pc = pcRef.current;
+    if (!pc || !pc.remoteDescription) return;
+    const queued = pendingIceRef.current;
+    pendingIceRef.current = [];
+    for (const cand of queued) {
+      try {
+        await pc.addIceCandidate(JSON.parse(cand));
+      } catch (err) {
+        console.warn("drainPendingIce addIceCandidate failed", err);
+      }
+    }
+  };
 
   const clearCallError = () => setErrorText("");
 
@@ -552,6 +575,11 @@ function CallModal({
     (notify = false, kind = "end") => {
       if (closedRef.current) return;
       closedRef.current = true;
+
+      if (disconnectTimerRef.current) {
+        clearTimeout(disconnectTimerRef.current);
+        disconnectTimerRef.current = null;
+      }
 
       try {
         if (notify) {
@@ -637,13 +665,49 @@ function CallModal({
       await refreshRemoteVideoUi();
     };
 
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "connected") {
-        setPhase("connected");
-        clearCallError();
+    const markConnected = () => {
+      if (disconnectTimerRef.current) {
+        clearTimeout(disconnectTimerRef.current);
+        disconnectTimerRef.current = null;
       }
-      if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+      setPhase("connected");
+      clearCallError();
+    };
+
+    const enterDisconnectedGrace = () => {
+      setErrorText(t.call.reconnecting);
+      if (!disconnectTimerRef.current) {
+        disconnectTimerRef.current = setTimeout(() => {
+          disconnectTimerRef.current = null;
+          const stillBad =
+            pcRef.current &&
+            pcRef.current.connectionState !== "connected" &&
+            pcRef.current.iceConnectionState !== "connected" &&
+            pcRef.current.iceConnectionState !== "completed";
+          if (stillBad) cleanupCall(false);
+        }, 8000);
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      const st = pc.connectionState;
+      if (st === "connected") markConnected();
+      if (st === "failed") cleanupCall(false);
+      if (st === "disconnected") enterDisconnectedGrace();
+    };
+
+    // Fallback for WebViews where RTCPeerConnection.connectionState /
+    // onconnectionstatechange isn't implemented (older WebKit): drive the call
+    // phase off iceConnectionState instead, otherwise the call connects but the
+    // UI stays stuck on "calling" forever.
+    pc.oniceconnectionstatechange = () => {
+      const ice = pc.iceConnectionState;
+      if (ice === "connected" || ice === "completed") {
+        markConnected();
+      } else if (ice === "failed") {
         cleanupCall(false);
+      } else if (ice === "disconnected" && !pc.connectionState) {
+        enterDisconnectedGrace();
       }
     };
 
@@ -653,7 +717,7 @@ function CallModal({
   const startLocalMedia = async () => {
     if (localStreamRef.current) return localStreamRef.current;
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error("getUserMedia недоступен");
+      throw new Error("getUserMedia is unavailable");
     }
 
     try {
@@ -668,9 +732,7 @@ function CallModal({
 
       return stream;
     } catch (err) {
-      setErrorText(
-        "Не удалось получить доступ к микрофону/камере. Проверь разрешения macOS для приложения."
-      );
+      setErrorText(t.call.errMedia);
       throw err;
     }
   };
@@ -691,6 +753,7 @@ function CallModal({
     if (ignoreOfferRef.current) return;
 
     await pc.setRemoteDescription(JSON.parse(payload.data));
+    await drainPendingIce();
 
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
@@ -725,7 +788,7 @@ function CallModal({
     // "Принять" выглядела так, будто она "ничего не делает".
     if (payload.kind === "send_error") {
       console.error("Signal send failed:", payload);
-      setErrorText("Не удалось отправить сигнал собеседнику. Проверьте сеть/VPN.");
+      setErrorText(t.call.errSignalSend);
       return;
     }
 
@@ -746,13 +809,7 @@ function CallModal({
     try {
       if (payload.kind === "answer" || payload.kind === "renegotiate-answer") {
         await pc.setRemoteDescription(JSON.parse(payload.data));
-
-        for (const cand of pendingIceRef.current) {
-          try {
-            await pc.addIceCandidate(JSON.parse(cand));
-          } catch {}
-        }
-        pendingIceRef.current = [];
+        await drainPendingIce();
 
         await attachRemoteStream();
         await refreshRemoteVideoUi();
@@ -773,7 +830,7 @@ function CallModal({
       }
     } catch (err) {
       console.error("Signal handler failed:", err, payload);
-      setErrorText("Ошибка обработки сигнала звонка.");
+      setErrorText(t.call.errSignal);
     }
   };
 
@@ -789,9 +846,11 @@ function CallModal({
 
       if (!isCaller && incomingOffer) {
         await pc.setRemoteDescription(JSON.parse(incomingOffer));
+        await drainPendingIce();
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         await WailsApp.SendSignal(target.peerId, callId, "answer", JSON.stringify(answer), video);
+        await drainPendingIce();
         setPhase("calling");
         return;
       }
@@ -815,9 +874,7 @@ function CallModal({
       // молча. Теперь ошибка отображается в call-status.
       console.error("startConnection failed:", err);
       startedRef.current = false;
-      setErrorText(
-        "Не удалось соединиться с собеседником. Проверьте сеть/VPN и повторите попытку."
-      );
+      setErrorText(t.call.errConnect);
     }
   };
 
@@ -894,7 +951,7 @@ function CallModal({
             playsInline
             className={"call-remote-video " + (remoteZoomed ? "zoomed" : "")}
             onDoubleClick={() => setRemoteZoomed((z) => !z)}
-            title="Двойной клик — увеличить/уменьшить"
+            title={t.call.zoomHint}
           />
         )}
 
@@ -1004,15 +1061,25 @@ function MessageBubble({ m, onDelete, onReact, onOpenMedia, myPeerId, t }) {
             {new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </span>
           {m.out && (
-            <span className={"read-ticks " + (m.read ? "read" : "")}>
-              {m.read ? "✓✓" : "✓"}
+            <span
+              className={
+                "read-ticks " +
+                (m.read ? "read" : "") +
+                (m.delivered === false ? " pending" : "")
+              }
+            >
+              {m.delivered === false ? "🕐" : m.read ? "✓✓" : "✓"}
             </span>
           )}
         </span>
       </motion.div>
 
-      {/* NEW: отображение поставленной реакции под бабблом */}
-      {m.reaction && <div className="bubble-reaction">{m.reaction}</div>}
+      {/* реакции: моя (m.reaction) и собеседника (m.reactionPeer) */}
+      {(m.reaction || m.reactionPeer) && (
+        <div className="bubble-reaction">
+          {[m.reaction, m.reactionPeer].filter(Boolean).join(" ")}
+        </div>
+      )}
 
       {menuOpen && (
         <div className="msg-menu glass-strong" onMouseLeave={() => setMenuOpen(false)}>
@@ -1105,7 +1172,7 @@ function ChatWindow({
     return (
       <div className="main-panel glass">
         <div className="empty-hint" style={{ margin: "auto" }}>
-          Выберите чат или найдите собеседника во вкладке "В сети"
+          {t.pickChatHint}
         </div>
       </div>
     );
@@ -1126,7 +1193,13 @@ function ChatWindow({
 
   const attach = (e) => {
     const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
+
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      alert(t.attachTooLarge);
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = () => {
@@ -1137,7 +1210,6 @@ function ChatWindow({
       });
     };
     reader.readAsDataURL(file);
-    e.target.value = "";
   };
 
   const displayMessages = (Array.isArray(messages) ? messages : []).map((m) => ({
@@ -1149,7 +1221,7 @@ function ChatWindow({
     chat.type === "saved"
       ? t.savedNotes
       : isPeerTyping
-        ? "печатает…"
+        ? t.typing
         : chat.online
           ? t.online
           : t.offline;
@@ -1553,6 +1625,9 @@ export default function App() {
   const onlinePeersRawRef = useRef(onlinePeersRaw);
   const activeCallIdRef = useRef(null);
   const typingSendTimerRef = useRef(null);
+  // peerId -> timeout: auto-clears a stuck "typing…" if the "stopped" signal
+  // never arrives (peer app crashed / lost connection mid-typing).
+  const typingClearTimersRef = useRef({});
 
   useEffect(() => {
     blockedRef.current = blocked;
@@ -1677,7 +1752,14 @@ export default function App() {
   useEffect(() => {
     if (!profile) return;
 
-    setConnStatus("connected");
+    let cancelled = false;
+    WailsApp.NetworkReady()
+      .then((ready) => {
+        if (!cancelled) setConnStatus(ready ? "connected" : "disconnected");
+      })
+      .catch(() => {
+        if (!cancelled) setConnStatus("connected");
+      });
 
     const cancelPeers = EventsOn("peers:update", (peers) => {
       setOnlinePeersRaw(Array.isArray(peers) ? peers : []);
@@ -1685,11 +1767,22 @@ export default function App() {
 
     const cancelIncoming = EventsOn("message:incoming", (msg = {}) => {
       if (!msg.chatId) return;
+      setMessagesByChat((prev) => {
+        const list = prev[msg.chatId] || [];
+        if (list.some((m) => m.id === msg.id)) return prev;
+        return { ...prev, [msg.chatId]: sortByTs([...list, msg]) };
+      });
+      refreshChats();
+    });
+
+    const cancelDelivered = EventsOn("message:delivered", ({ chatId, id } = {}) => {
+      if (!chatId || !id) return;
       setMessagesByChat((prev) => ({
         ...prev,
-        [msg.chatId]: [...(prev[msg.chatId] || []), msg],
+        [chatId]: (prev[chatId] || []).map((m) =>
+          m.id === id ? { ...m, delivered: true } : m
+        ),
       }));
-      refreshChats();
     });
 
     const cancelDeleted = EventsOn("message:deleted", ({ chatId, id } = {}) => {
@@ -1712,13 +1805,13 @@ export default function App() {
       refreshChats();
     });
 
-    // NEW: реакция от собеседника
-    const cancelReacted = EventsOn("message:reacted", ({ chatId, id, reaction } = {}) => {
+    // реакция от собеседника — кладём в reactionPeer, чтобы не затирать свою
+    const cancelReacted = EventsOn("message:reacted", ({ chatId, id, reactionPeer } = {}) => {
       if (!chatId || !id) return;
       setMessagesByChat((prev) => ({
         ...prev,
         [chatId]: (prev[chatId] || []).map((m) =>
-          m.id === id ? { ...m, reaction } : m
+          m.id === id ? { ...m, reactionPeer: reactionPeer || "" } : m
         ),
       }));
     });
@@ -1737,10 +1830,19 @@ export default function App() {
       if (payload.kind === "typing") {
         try {
           const data = JSON.parse(payload.data || "{}");
-          setTypingByPeer((prev) => ({
-            ...prev,
-            [payload.peerId]: !!data.isTyping,
-          }));
+          const isTyping = !!data.isTyping;
+          const timers = typingClearTimersRef.current;
+          if (timers[payload.peerId]) {
+            clearTimeout(timers[payload.peerId]);
+            delete timers[payload.peerId];
+          }
+          setTypingByPeer((prev) => ({ ...prev, [payload.peerId]: isTyping }));
+          if (isTyping) {
+            timers[payload.peerId] = setTimeout(() => {
+              delete timers[payload.peerId];
+              setTypingByPeer((prev) => ({ ...prev, [payload.peerId]: false }));
+            }, 6000);
+          }
         } catch {}
         return;
       }
@@ -1815,8 +1917,10 @@ export default function App() {
     window.addEventListener("online", netCheck);
 
     return () => {
+      cancelled = true;
       cancelPeers?.();
       cancelIncoming?.();
+      cancelDelivered?.();
       cancelDeleted?.();
       cancelRead?.();
       cancelReacted?.();
@@ -1868,17 +1972,18 @@ export default function App() {
       setShowSettings(false);
     } catch (err) {
       console.error("startChatWithPeer failed:", err);
-      alert("Не удалось открыть чат: " + (err?.message || err));
+      alert(t.openChatError + (err?.message || err));
     }
   };
 
   const sendMessage = async (chatId, { text, mediaKind, mediaData }) => {
     try {
       const msg = await WailsApp.SendMessage(chatId, text, mediaKind, mediaData);
-      setMessagesByChat((prev) => ({
-        ...prev,
-        [chatId]: [...(prev[chatId] || []), msg],
-      }));
+      setMessagesByChat((prev) => {
+        const list = prev[chatId] || [];
+        if (list.some((m) => m.id === msg.id)) return prev;
+        return { ...prev, [chatId]: sortByTs([...list, msg]) };
+      });
       refreshChats();
     } catch (err) {
       console.error("SendMessage failed:", err);
@@ -1985,19 +2090,32 @@ export default function App() {
     [refreshChats, profile?.peerId]
   );
 
-  // NEW: отправка сигнала "печатает…" с дебаунсом, чтобы не спамить сеть
-  const handleTyping = useCallback(
-    (peerId, isTyping) => {
-      if (!peerId || peerId === SAVED_CHAT_ID) return;
-      if (typingSendTimerRef.current) clearTimeout(typingSendTimerRef.current);
-      typingSendTimerRef.current = setTimeout(() => {
-        WailsApp.SendTyping(peerId, isTyping).catch((err) => {
-          console.error("SendTyping failed:", err);
-        });
-      }, 120);
-    },
-    []
-  );
+  // Индикатор "печатает…": true уходит сразу (но не чаще раза в 2с), false —
+  // с небольшим дебаунсом после остановки. Раньше и true отправлялся только
+  // через 120мс ПОСЛЕ остановки ввода, поэтому индикатор почти не появлялся.
+  const typingLastSentRef = useRef(0);
+  const handleTyping = useCallback((peerId, isTyping) => {
+    if (!peerId || peerId === SAVED_CHAT_ID) return;
+    if (typingSendTimerRef.current) {
+      clearTimeout(typingSendTimerRef.current);
+      typingSendTimerRef.current = null;
+    }
+
+    const flush = (value) => {
+      typingLastSentRef.current = value ? Date.now() : 0;
+      WailsApp.SendTyping(peerId, value).catch((err) => {
+        console.error("SendTyping failed:", err);
+      });
+    };
+
+    if (isTyping) {
+      if (Date.now() - typingLastSentRef.current > 2000) flush(true);
+      // страховочный "перестал печатать", если ввод замер
+      typingSendTimerRef.current = setTimeout(() => flush(false), 4000);
+    } else {
+      typingSendTimerRef.current = setTimeout(() => flush(false), 300);
+    }
+  }, []);
 
   const startCall = (target, video) => {
     if (callState) return;
@@ -2023,11 +2141,16 @@ export default function App() {
   }, []);
 
   const logout = async () => {
+    const prevPeerId = profile?.peerId;
     try {
       await WailsApp.Logout();
     } catch (err) {
       console.error("Logout failed:", err);
     }
+    // "Удалить локальный профиль" должно чистить и локальное «Избранное».
+    try {
+      if (prevPeerId) localStorage.removeItem(savedStorageKey(prevPeerId));
+    } catch {}
     setProfileState(null);
     setChatsRaw([]);
     setMessagesByChat({});
@@ -2092,8 +2215,18 @@ export default function App() {
   const [showDisclaimer, setShowDisclaimer] = useState(false);
 
   if (bootLoading) return <div className="app-root" />;
-  if (!profile) return <Onboarding onDone={(p) => { setProfileState(p); setShowDisclaimer(true); }} />;
-  if (showDisclaimer) return <DisclaimerModal onDismiss={() => setShowDisclaimer(false)} />;
+  if (!profile)
+    return (
+      <Onboarding
+        t={t}
+        onDone={(p) => {
+          setProfileState(p);
+          setShowDisclaimer(true);
+        }}
+      />
+    );
+  if (showDisclaimer)
+    return <DisclaimerModal t={t} onDismiss={() => setShowDisclaimer(false)} />;
 
   return (
     <div className={"app-root " + (isMaximized ? "maximized" : "")}>
@@ -2190,7 +2323,7 @@ export default function App() {
         )}
 
         {viewerItem && (
-          <MediaViewer item={viewerItem} onClose={() => setViewerItem(null)} />
+          <MediaViewer item={viewerItem} onClose={() => setViewerItem(null)} t={t} />
         )}
 
         {callState && (

@@ -21,11 +21,19 @@
 
 - **Backend:** Go, [Wails v2](https://wails.io), SQLite (`modernc.org/sqlite`)
 - **Frontend:** React, Framer Motion
-- **Связь:** TCP-транспорт для сообщений, UDP multicast для обнаружения пиров, WebRTC для звонков
+- **Связь:** TCP-транспорт для сообщений, UDP multicast + unicast для обнаружения пиров, WebRTC для звонков
+
+## Модель безопасности
+
+Cloudix рассчитан на **доверенную сеть** (домашний LAN или частный VPN вроде
+RadminVPN/Hamachi). Медиапоток звонков шифруется (WebRTC/DTLS), но текстовые
+сообщения и сигналинг звонков передаются в открытом виде и **не подписываются** —
+любой участник той же сети технически может отправить сообщение от чужого имени.
+Не используйте Cloudix в недоверенных / публичных сетях.
 
 ## Требования для сборки
 
-- [Go](https://go.dev/dl/) 1.21+
+- [Go](https://go.dev/dl/) 1.25+
 - [Node.js](https://nodejs.org/) 18+
 - [Wails CLI v2](https://wails.io/docs/gettingstarted/installation)
 
@@ -61,21 +69,24 @@ wails build -platform windows/amd64
 
 Готовый `.exe` появится в `build/bin/Cloudix.exe`.
 
-> Кросс-компиляция между macOS и Windows в Wails ограничена — для сборки `.exe` рекомендуется собирать непосредственно на Windows или в CI (например, GitHub Actions с матрицей `windows-latest` / `macos-latest`).
+> Кросс-компиляция между macOS и Windows в Wails ограничена — для сборки `.exe` рекомендуется собирать непосредственно на Windows или в CI. В репозитории есть workflow `.github/workflows/build.yml` с матрицей `windows-latest` / `macos-latest`.
 
 ## Структура проекта
+```
 Cloudix/
 ├── backend/
-│ ├── app.go # Bound-методы, доступные фронтенду
-│ ├── models/ # Общие структуры данных
-│ ├── storage/ # Работа с SQLite
-│ └── transport/ # TCP-транспорт для P2P-обмена
+│   ├── app/        # Bound-методы, доступные фронтенду, роутер входящих пакетов
+│   ├── models/     # Общие структуры данных, типы wire-протокола
+│   ├── storage/    # Работа с SQLite
+│   ├── transport/  # TCP-транспорт для P2P-обмена
+│   └── discovery/  # UDP multicast + unicast обнаружение пиров
 ├── frontend/
-│ ├── src/
-│ │ ├── App.jsx # Основной UI
-│ │ └── i18n/ # Локализация
-│ └── wailsjs/ # Автогенерируемые биндинги Wails
+│   ├── src/
+│   │   ├── App.jsx # Основной UI
+│   │   └── i18n.js # Локализация (ru/en)
+│   └── wailsjs/    # Автогенерируемые биндинги Wails
 └── wails.json
+```
 
 
 ## Лицензия

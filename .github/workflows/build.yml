@@ -6,27 +6,39 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows/amd64
+            artifact: Cloudix-Windows
+            path: build/bin/Cloudix.exe
+          - os: macos-latest
+            platform: darwin/universal
+            artifact: Cloudix-macOS
+            path: build/bin/Cloudix.app
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.21"
+          go-version: "1.25"
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: "20"
 
       - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 
-      - name: Build Windows app
-        run: wails build -platform windows/amd64
+      - name: Build
+        run: wails build -platform ${{ matrix.platform }}
 
-      - name: Upload Windows artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Cloudix-Windows
-          path: build/bin/Cloudix.exe
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}

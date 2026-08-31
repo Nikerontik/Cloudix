@@ -12,6 +12,17 @@ import (
 	"cloudix/backend/models"
 )
 
+const (
+	// maxLineBytes bounds a single newline-delimited envelope. Media travels
+	// inline as a base64 data URL, so this must comfortably exceed
+	// maxMediaBytes (frontend limit) inflated by base64 (~33%) plus JSON
+	// escaping. Anything larger is dropped without killing the connection.
+	maxLineBytes = 96 * 1024 * 1024
+	// writeTimeout keeps a stale/half-open socket from blocking a Send (and,
+	// through it, a bound call like SendMessage) for the OS TCP timeout.
+	writeTimeout = 10 * time.Second
+)
+
 type Manager struct {
 	mu         sync.Mutex
 	conns      map[string]net.Conn
@@ -78,13 +89,22 @@ func (m *Manager) readLoop(conn net.Conn) {
 		_ = conn.Close()
 	}()
 
-	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
-
+	// bufio.Reader (not Scanner) so that a single oversized frame is skipped
+	// instead of tearing down the whole connection the way Scanner does on
+	// bufio.ErrTooLong.
+	reader := bufio.NewReaderSize(conn, 1024*1024)
 	registeredPeerID := ""
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	for {
+		line, err := readLine(reader, maxLineBytes)
+		if err != nil {
+			return
+		}
+		if line == nil {
+			// Frame exceeded maxLineBytes and was discarded; keep the
+			// connection alive for subsequent messages.
+			continue
+		}
 
 		var env models.WireEnvelope
 		if err := json.Unmarshal(line, &env); err != nil {
@@ -111,9 +131,32 @@ func (m *Manager) readLoop(conn net.Conn) {
 			m.onEnvelope(env)
 		}
 	}
+}
 
-	if err := scanner.Err(); err != nil {
-		_ = err
+// readLine reads one '\n'-terminated frame. It returns (nil, nil) when a frame
+// is longer than limit (the frame is drained and skipped), and a non-nil error
+// only when the connection is unusable.
+func readLine(r *bufio.Reader, limit int) ([]byte, error) {
+	var buf []byte
+	over := false
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if !over && len(buf)+len(chunk) > limit {
+			over = true
+		}
+		if !over {
+			buf = append(buf, chunk...)
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if over {
+			return nil, nil
+		}
+		return buf, nil
 	}
 }
 
@@ -159,7 +202,9 @@ func (m *Manager) sendOnConn(conn net.Conn, env models.WireEnvelope) error {
 		return err
 	}
 	data = append(data, '\n')
+	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	_, err = conn.Write(data)
+	_ = conn.SetWriteDeadline(time.Time{})
 	return err
 }
 

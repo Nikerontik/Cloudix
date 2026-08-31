@@ -26,6 +26,10 @@ type App struct {
 
 	profileMu sync.RWMutex
 	profile   *models.Profile
+
+	netMu     sync.Mutex
+	netReady  bool
+	netStopCh chan struct{}
 }
 
 func NewApp() *App { return &App{} }
@@ -99,12 +103,15 @@ func (a *App) onNewPeerDiscovered(peerID string) {
 			runtime.LogErrorf(a.ctx, "auto avatar_request to %s failed: %v", peerID, err)
 		}
 	}()
+
+	// Peer just (re)appeared — push any messages queued while it was offline.
+	go a.flushUndelivered()
 }
 
 func (a *App) initNetworking() error {
 	a.transport = transport.NewManager(a.handleEnvelope, func(peerID, ip string) {
 		if a.discovery != nil {
-			a.discovery.AddManualTarget(net.JoinHostPort(ip, "47990"))
+			a.discovery.AddManualTarget(net.JoinHostPort(ip, discovery.UDPPort))
 		}
 	})
 
@@ -128,7 +135,111 @@ func (a *App) initNetworking() error {
 		return fmt.Errorf("discovery.Start: %w", err)
 	}
 
+	a.netMu.Lock()
+	a.netStopCh = make(chan struct{})
+	stop := a.netStopCh
+	a.netReady = true
+	a.netMu.Unlock()
+
+	go a.deliveryFlushLoop(stop)
+
 	return nil
+}
+
+// stopNetworking tears down discovery, transport and the delivery-retry loop.
+// Safe to call more than once.
+func (a *App) stopNetworking() {
+	a.netMu.Lock()
+	if a.netStopCh != nil {
+		close(a.netStopCh)
+		a.netStopCh = nil
+	}
+	a.netReady = false
+	a.netMu.Unlock()
+
+	if a.discovery != nil {
+		a.discovery.Stop()
+		a.discovery = nil
+	}
+	if a.transport != nil {
+		a.transport.Stop()
+		a.transport = nil
+	}
+}
+
+// NetworkReady reports whether discovery/transport started successfully. The
+// frontend uses it so the connection badge isn't stuck on "connected" when
+// networking actually failed to come up.
+func (a *App) NetworkReady() bool {
+	a.netMu.Lock()
+	defer a.netMu.Unlock()
+	return a.netReady
+}
+
+// deliveryFlushLoop periodically retries messages that were composed while the
+// peer was offline.
+func (a *App) deliveryFlushLoop(stop <-chan struct{}) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			a.flushUndelivered()
+		}
+	}
+}
+
+func (a *App) flushUndelivered() {
+	store := a.store
+	transportMgr := a.transport
+	profile := a.getProfile()
+	if store == nil || transportMgr == nil || profile == nil {
+		return
+	}
+
+	pending, err := store.ListAllUndelivered(profile.PeerID)
+	if err != nil || len(pending) == 0 {
+		return
+	}
+
+	for _, m := range pending {
+		// Only retry when the peer is actually reachable right now: a live
+		// discovery entry or an open connection. A stale entry would make
+		// transport.Send burn its full dial timeout per queued message.
+		live := false
+		if a.discovery != nil {
+			_, live = a.discovery.GetPeer(m.ChatID)
+		}
+		if !live && !transportMgr.HasConn(m.ChatID) {
+			continue
+		}
+		peer, ok := a.resolvePeer(m.ChatID)
+		if !ok {
+			continue
+		}
+		payload, err := json.Marshal(models.MessagePayload{
+			ID:        m.ID,
+			Text:      m.Text,
+			MediaKind: m.MediaKind,
+			MediaData: m.MediaData,
+			Timestamp: m.Timestamp,
+		})
+		if err != nil {
+			continue
+		}
+		if err := transportMgr.Send(peer, models.WireEnvelope{
+			Type:     models.EnvelopeTypeMessage,
+			SenderID: profile.PeerID,
+			Payload:  payload,
+		}); err != nil {
+			continue
+		}
+		if err := store.MarkMessageDelivered(m.ID); err == nil {
+			a.emitEvent("message:delivered", map[string]string{"chatId": m.ChatID, "id": m.ID})
+		}
+	}
 }
 
 func (a *App) OnStartup(ctx context.Context) {
@@ -158,12 +269,7 @@ func (a *App) OnBeforeClose(ctx context.Context) bool {
 	if profile != nil && a.discovery != nil {
 		a.discovery.AnnounceGoodbye(profile)
 	}
-	if a.discovery != nil {
-		a.discovery.Stop()
-	}
-	if a.transport != nil {
-		a.transport.Stop()
-	}
+	a.stopNetworking()
 	if a.store != nil {
 		if err := a.store.Close(); err != nil {
 			runtime.LogErrorf(ctx, "store.Close failed: %v", err)
@@ -259,14 +365,7 @@ func (a *App) Logout() error {
 		a.discovery.AnnounceGoodbye(profile)
 	}
 
-	if a.discovery != nil {
-		a.discovery.Stop()
-		a.discovery = nil
-	}
-	if a.transport != nil {
-		a.transport.Stop()
-		a.transport = nil
-	}
+	a.stopNetworking()
 	if oldStore != nil {
 		if err := oldStore.WipeAll(); err != nil {
 			return fmt.Errorf("WipeAll: %w", err)
@@ -352,6 +451,7 @@ func (a *App) SendMessage(peerID, text, mediaKind, mediaData string) (*models.Me
 		MediaKind: mediaKind,
 		MediaData: mediaData,
 		Timestamp: time.Now().UnixMilli(),
+		Delivered: false,
 	}
 
 	if err := a.store.InsertMessage(msg); err != nil {
@@ -373,29 +473,53 @@ func (a *App) SendMessage(peerID, text, mediaKind, mediaData string) (*models.Me
 		runtime.LogErrorf(a.ctx, "TouchChatLastMessage failed: %v", err)
 	}
 
-	if a.transport != nil {
-		if peer, ok := a.resolvePeer(peerID); ok {
-			payload, err := json.Marshal(models.MessagePayload{
-				ID:        msg.ID,
-				Text:      text,
-				MediaKind: mediaKind,
-				MediaData: mediaData,
-				Timestamp: msg.Timestamp,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("marshal MessagePayload: %w", err)
-			}
-			if err := a.transport.Send(peer, models.WireEnvelope{
-				Type:     models.EnvelopeTypeMessage,
-				SenderID: profile.PeerID,
-				Payload:  payload,
-			}); err != nil && a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "Send message to peer failed: %v", err)
-			}
-		}
-	}
+	// Network send is done off the bound call: transport.Send can block on a
+	// dial (up to 3s) or a write to a half-open socket. If the peer is
+	// unreachable the message stays delivered=0 and deliveryFlushLoop retries
+	// it once the peer is back.
+	go a.trySendMessage(msg)
 
 	return &msg, nil
+}
+
+func (a *App) trySendMessage(msg models.Message) {
+	transportMgr := a.transport
+	profile := a.getProfile()
+	if transportMgr == nil || profile == nil {
+		return
+	}
+
+	peer, ok := a.resolvePeer(msg.ChatID)
+	if !ok {
+		return
+	}
+
+	payload, err := json.Marshal(models.MessagePayload{
+		ID:        msg.ID,
+		Text:      msg.Text,
+		MediaKind: msg.MediaKind,
+		MediaData: msg.MediaData,
+		Timestamp: msg.Timestamp,
+	})
+	if err != nil {
+		return
+	}
+
+	if err := transportMgr.Send(peer, models.WireEnvelope{
+		Type:     models.EnvelopeTypeMessage,
+		SenderID: profile.PeerID,
+		Payload:  payload,
+	}); err != nil {
+		if a.ctx != nil {
+			runtime.LogErrorf(a.ctx, "Send message to peer failed: %v", err)
+		}
+		return
+	}
+
+	if a.store != nil {
+		_ = a.store.MarkMessageDelivered(msg.ID)
+	}
+	a.emitEvent("message:delivered", map[string]string{"chatId": msg.ChatID, "id": msg.ID})
 }
 
 func (a *App) MarkChatRead(peerID string) error {
@@ -565,7 +689,7 @@ func (a *App) AddManualPeer(ipOrAddr string) error {
 
 	addr := ipOrAddr
 	if _, _, err := net.SplitHostPort(addr); err != nil {
-		addr = net.JoinHostPort(ipOrAddr, "47990")
+		addr = net.JoinHostPort(ipOrAddr, discovery.UDPPort)
 	}
 
 	a.discovery.AddManualTarget(addr)
@@ -582,7 +706,7 @@ func (a *App) RemoveManualPeer(ipOrAddr string) error {
 
 	addr := ipOrAddr
 	if _, _, err := net.SplitHostPort(addr); err != nil {
-		addr = net.JoinHostPort(ipOrAddr, "47990")
+		addr = net.JoinHostPort(ipOrAddr, discovery.UDPPort)
 	}
 
 	a.discovery.RemoveManualTarget(addr)
@@ -725,7 +849,7 @@ func (a *App) ReactToMessage(peerID, messageID, emoji string) error {
 		return fmt.Errorf("messageID is required")
 	}
 
-	if err := a.store.SetMessageReaction(messageID, emoji); err != nil {
+	if err := a.store.SetMessageReaction(messageID, emoji, true); err != nil {
 		return fmt.Errorf("SetMessageReaction: %w", err)
 	}
 
@@ -845,6 +969,9 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 
 		a.emitEvent("message:incoming", msg)
 
+		// Peer is clearly reachable now — flush anything we queued for them.
+		go a.flushUndelivered()
+
 	case models.EnvelopeTypeDeleteMessage:
 		var p models.DeletePayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
@@ -899,13 +1026,13 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 			}
 			return
 		}
-		if err := a.store.SetMessageReaction(p.MessageID, p.Emoji); err != nil && a.ctx != nil {
+		if err := a.store.SetMessageReaction(p.MessageID, p.Emoji, false); err != nil && a.ctx != nil {
 			runtime.LogErrorf(a.ctx, "SetMessageReaction incoming failed: %v", err)
 		}
 		a.emitEvent("message:reacted", map[string]interface{}{
-			"chatId":   env.SenderID,
-			"id":       p.MessageID,
-			"reaction": p.Emoji,
+			"chatId":       env.SenderID,
+			"id":           p.MessageID,
+			"reactionPeer": p.Emoji,
 		})
 
 	case models.EnvelopeTypeProfileUpdate:

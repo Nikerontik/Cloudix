@@ -40,6 +40,8 @@ export namespace models {
 	    deletedForBoth: boolean;
 	    read: boolean;
 	    reaction?: string;
+	    reactionPeer?: string;
+	    delivered: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Message(source);
@@ -58,6 +60,8 @@ export namespace models {
 	        this.deletedForBoth = source["deletedForBoth"];
 	        this.read = source["read"];
 	        this.reaction = source["reaction"];
+	        this.reactionPeer = source["reactionPeer"];
+	        this.delivered = source["delivered"];
 	    }
 	}
 	export class Peer {

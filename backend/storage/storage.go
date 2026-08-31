@@ -121,7 +121,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_id
 	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN deleted_for_me INTEGER DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN deleted_for_both INTEGER DEFAULT 0`)
 	// NEW: поле для реакций. Пустая строка = нет реакции.
+	// reaction      — моя реакция на сообщение
+	// reaction_peer — реакция собеседника (раньше была общая колонка, из-за
+	//                 чего входящая реакция затирала свою собственную).
 	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN reaction TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN reaction_peer TEXT DEFAULT ''`)
+	// delivered — доставлено ли ИСХОДЯЩЕЕ сообщение (0 = в очереди на
+	// повторную отправку, пока пир не появится в сети). Для входящих и для
+	// старых строк значение 1.
+	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN delivered INTEGER DEFAULT 1`)
 
 	return nil
 }
@@ -286,8 +294,8 @@ func (s *Store) InsertMessage(m models.Message) error {
 	_, err := s.db.Exec(`
         INSERT INTO messages (
             id, chat_id, sender_id, text, media_kind, media_data, ts,
-            deleted_for_me, deleted_for_both, read, reaction
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            deleted_for_me, deleted_for_both, read, reaction, reaction_peer, delivered
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
 		m.ID,
 		m.ChatID,
@@ -300,6 +308,8 @@ func (s *Store) InsertMessage(m models.Message) error {
 		boolToInt(m.DeletedForBoth),
 		boolToInt(m.Read),
 		m.Reaction,
+		m.ReactionPeer,
+		boolToInt(m.Delivered),
 	)
 	return err
 }
@@ -320,7 +330,9 @@ func (s *Store) ListMessages(chatID string) ([]models.Message, error) {
             COALESCE(deleted_for_me, 0),
             COALESCE(deleted_for_both, 0),
             COALESCE(read, 0),
-            COALESCE(reaction, '')
+            COALESCE(reaction, ''),
+            COALESCE(reaction_peer, ''),
+            COALESCE(delivered, 1)
         FROM messages
         WHERE chat_id=?
           AND deleted_for_me=0
@@ -334,7 +346,7 @@ func (s *Store) ListMessages(chatID string) ([]models.Message, error) {
 	var out []models.Message
 	for rows.Next() {
 		var m models.Message
-		var deletedMe, deletedBoth, read int
+		var deletedMe, deletedBoth, read, delivered int
 		if err := rows.Scan(
 			&m.ID,
 			&m.ChatID,
@@ -347,12 +359,15 @@ func (s *Store) ListMessages(chatID string) ([]models.Message, error) {
 			&deletedBoth,
 			&read,
 			&m.Reaction,
+			&m.ReactionPeer,
+			&delivered,
 		); err != nil {
 			return nil, err
 		}
 		m.DeletedForMe = deletedMe == 1
 		m.DeletedForBoth = deletedBoth == 1
 		m.Read = read == 1
+		m.Delivered = delivered == 1
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -381,23 +396,64 @@ func (s *Store) SoftDeleteMessage(id string, forBoth bool) error {
 	return err
 }
 
-// NEW: SetMessageReaction устанавливает (или снимает, если emoji == "")
-// реакцию на сообщение по его ID. Именно этого метода не хватало —
-// app.go.ReactToMessage вызывает его для сохранения реакции локально
-// перед отправкой уведомления собеседнику.
-func (s *Store) SetMessageReaction(messageID, emoji string) error {
+// SetMessageReaction устанавливает (или снимает, если emoji == "") реакцию на
+// сообщение по его ID. mine=true — моя реакция, mine=false — реакция
+// собеседника. Раньше была одна общая колонка, и входящая реакция затирала
+// собственную.
+func (s *Store) SetMessageReaction(messageID, emoji string, mine bool) error {
 	if s.db == nil {
 		return fmt.Errorf("db not initialized")
 	}
 	if messageID == "" {
 		return fmt.Errorf("messageID is required")
 	}
-	_, err := s.db.Exec(`
-        UPDATE messages
-        SET reaction=?
-        WHERE id=?
-    `, emoji, messageID)
+	col := "reaction_peer"
+	if mine {
+		col = "reaction"
+	}
+	_, err := s.db.Exec(`UPDATE messages SET `+col+`=? WHERE id=?`, emoji, messageID)
 	return err
+}
+
+// MarkMessageDelivered помечает исходящее сообщение как доставленное (успешно
+// отправленное по транспорту).
+func (s *Store) MarkMessageDelivered(id string) error {
+	if s.db == nil {
+		return fmt.Errorf("db not initialized")
+	}
+	_, err := s.db.Exec(`UPDATE messages SET delivered=1 WHERE id=?`, id)
+	return err
+}
+
+// ListAllUndelivered возвращает все мои исходящие сообщения, которые ещё не
+// доставлены (пир был не в сети в момент отправки). Порядок — по времени.
+func (s *Store) ListAllUndelivered(myPeerID string) ([]models.Message, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("db not initialized")
+	}
+	rows, err := s.db.Query(`
+        SELECT id, chat_id, sender_id,
+               COALESCE(text,''), COALESCE(media_kind,''), COALESCE(media_data,''), ts
+        FROM messages
+        WHERE sender_id=?
+          AND delivered=0
+          AND deleted_for_both=0
+        ORDER BY ts ASC
+    `, myPeerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []models.Message
+	for rows.Next() {
+		var m models.Message
+		if err := rows.Scan(&m.ID, &m.ChatID, &m.SenderID, &m.Text, &m.MediaKind, &m.MediaData, &m.Timestamp); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) MarkMessagesRead(chatID, myPeerID string) ([]string, error) {

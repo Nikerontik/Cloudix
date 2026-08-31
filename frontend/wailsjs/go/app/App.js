@@ -46,8 +46,8 @@ export function MarkChatRead(arg1) {
   return window['go']['app']['App']['MarkChatRead'](arg1);
 }
 
-export function OnBeforeClose(arg1) {
-  return window['go']['app']['App']['OnBeforeClose'](arg1);
+export function NetworkReady() {
+  return window['go']['app']['App']['NetworkReady']();
 }
 
 export function ReactToMessage(arg1, arg2, arg3) {

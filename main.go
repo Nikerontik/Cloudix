@@ -26,6 +26,7 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 0, G: 0, B: 0, A: 0},
 		Assets:           assets,
 		OnStartup:        backendApp.OnStartup,
+		OnBeforeClose:    backendApp.OnBeforeClose,
 		Bind:             []interface{}{backendApp},
 		Mac: &mac.Options{
 			WindowIsTranslucent:  true,

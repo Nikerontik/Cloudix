@@ -58,7 +58,9 @@ type Message struct {
 	DeletedForMe   bool   `json:"deletedForMe"`
 	DeletedForBoth bool   `json:"deletedForBoth"`
 	Read           bool   `json:"read"`
-	Reaction       string `json:"reaction,omitempty"`
+	Reaction       string `json:"reaction,omitempty"`     // моя реакция
+	ReactionPeer   string `json:"reactionPeer,omitempty"` // реакция собеседника
+	Delivered      bool   `json:"delivered"`
 }
 
 type Chat struct {

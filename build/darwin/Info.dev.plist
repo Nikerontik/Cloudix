@@ -28,6 +28,8 @@
         <string>Cloudix uses the microphone for voice calls.</string>
         <key>NSCameraUsageDescription</key>
         <string>Cloudix uses the camera for video calls.</string>
+        <key>NSScreenCaptureUsageDescription</key>
+        <string>Cloudix uses screen capture for screen sharing during calls.</string>
 
         {{if .Info.FileAssociations}}
         <key>CFBundleDocumentTypes</key>
@@ -65,6 +67,7 @@
           {{end}}
         </array>
         {{end}}
+
         <key>NSAppTransportSecurity</key>
         <dict>
             <key>NSAllowsArbitraryLoads</key>
