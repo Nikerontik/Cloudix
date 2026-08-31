@@ -87,7 +87,10 @@ one a separate DB dir (`storage.dbPath` honors it). Profiles/ports are otherwise
 7. `unicastListenLoop` now binds via `net.ListenConfig{Control: reuseControl}`
    (SO_REUSEADDR + SO_REUSEPORT on unix, SO_REUSEADDR on windows —
    `reuse_unix.go` / `reuse_windows.go`).
-8. Call: only tears down on `failed`; `disconnected` gets an 8s grace timer.
+8. Call: only tears down on `failed`; `disconnected` gets an 8s grace timer. Phase is
+   also promoted to "connected" via `oniceconnectionstatechange` (fallback for WebViews
+   where `RTCPeerConnection.connectionState` isn't implemented — otherwise media connects
+   but the UI stays stuck on "calling").
 9. Call: `drainPendingIce()` called after every `setRemoteDescription`, incl. the callee.
 10. i18n: `en` filled out; RU literals in `App.jsx` routed through `t.*`.
 11. Per-user reactions: `reaction` (mine) + `reaction_peer` (theirs) columns.
@@ -111,3 +114,8 @@ one a separate DB dir (`storage.dbPath` honors it). Profiles/ports are otherwise
 - Pre-existing lockless access to `a.store` / `a.transport` / `a.discovery` across
   goroutines vs `Logout()` nil-assignment. New code snapshots into locals to match the
   existing style; a full fix would need an RWMutex around those fields.
+- **Calls between two instances on one Mac don't reach "connected"** (offer/answer
+  exchange completes — both show "calling" — but ICE connectivity check fails). Suspected
+  cause: WebKit obfuscates host candidates as `*.local` mDNS names and the same-host
+  loopback path for those is flaky. Needs verification across two real machines; consider
+  a `wails build -debug` build to read `iceConnectionState` in devtools.
