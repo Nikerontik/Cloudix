@@ -168,6 +168,7 @@ const dict = {
       errConnect:
         "Не удалось соединиться с собеседником. Проверьте сеть/VPN и повторите попытку.",
       errSignal: "Ошибка обработки сигнала звонка.",
+      errIceConfig: "Адрес TURN-сервера указан неверно — звонок идёт без него. Проверьте Настройки → Звонки через интернет.",
       errTimeout: "Собеседник не ответил на соединение. Завершите звонок и попробуйте снова.",
     },
     settings: {
@@ -190,9 +191,13 @@ const dict = {
       version: "Версия",
       calls: "Звонки через интернет",
       turnUrl: "TURN-сервер",
-      turnUrlPlaceholder: "turn:151.243.196.135:3478",
+      turnUrlPlaceholder: "turn:203.0.113.7:3478",
       turnUser: "Пользователь TURN",
       turnPass: "Пароль TURN",
+      turnSave: "Сохранить",
+      turnSaved: "Сохранено",
+      turnCleared: "Очищено — звонки идут напрямую",
+      turnInvalid: "Похоже на неверный адрес. Формат: turn:адрес:порт",
       turnHint:
         "Нужен, только если оба собеседника за CGNAT: тогда прямой медиапоток невозможен и его должен пересылать TURN. По локальной сети и при белом IP поле можно оставить пустым.",
       screenShare: "Демонстрация экрана",
@@ -402,6 +407,7 @@ const dict = {
       errSignalSend: "Could not send the signal to the peer. Check your network/VPN.",
       errConnect: "Could not connect to the peer. Check your network/VPN and try again.",
       errSignal: "Failed to process the call signal.",
+      errIceConfig: "The TURN server address is invalid — the call is running without it. Check Settings → Calls over the internet.",
       errTimeout: "The peer never completed the connection. End the call and try again.",
     },
     settings: {
@@ -427,6 +433,10 @@ const dict = {
       turnUrlPlaceholder: "turn:203.0.113.7:3478",
       turnUser: "TURN username",
       turnPass: "TURN password",
+      turnSave: "Save",
+      turnSaved: "Saved",
+      turnCleared: "Cleared — calls go direct",
+      turnInvalid: "That does not look like a valid address. Format: turn:host:port",
       turnHint:
         "Only needed when both peers are behind CGNAT: direct media is then impossible and a TURN server has to relay it. Leave empty on a LAN or with a public IP.",
       screenShare: "Screen sharing",

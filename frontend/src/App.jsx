@@ -1235,6 +1235,16 @@ const DEFAULT_STUN = [
   "stun:stun.cloudflare.com:3478",
 ];
 
+// Browsers reject an RTCPeerConnection outright if an ICE URL is malformed, so
+// a stray address would break every call rather than just TURN. Accept a bare
+// "host:port" and add the scheme.
+function normalizeTurnUrl(raw) {
+  const v = (raw || "").trim();
+  if (!v) return "";
+  if (/^(turns?|stuns?):/i.test(v)) return v;
+  return "turn:" + v;
+}
+
 function loadIceConfig() {
   try {
     const raw = JSON.parse(localStorage.getItem(ICE_KEY) || "{}");
@@ -1261,9 +1271,10 @@ function saveIceConfig(cfg) {
 function buildRtcConfig() {
   const cfg = loadIceConfig();
   const servers = [{ urls: DEFAULT_STUN }];
-  if (cfg.turnUrl) {
+  const turn = normalizeTurnUrl(cfg.turnUrl);
+  if (turn) {
     servers.push({
-      urls: cfg.turnUrl,
+      urls: turn,
       username: cfg.turnUser,
       credential: cfg.turnPass,
     });
@@ -1772,7 +1783,15 @@ function CallModal({
   const createPeerConnection = () => {
     if (pcRef.current) return pcRef.current;
 
-    const pc = new RTCPeerConnection(buildRtcConfig());
+    let pc;
+    try {
+      pc = new RTCPeerConnection(buildRtcConfig());
+    } catch (err) {
+      // A malformed TURN entry used to take the whole call down with it.
+      console.error("ICE configuration rejected, continuing without TURN:", err);
+      setErrorText(t.call.errIceConfig);
+      pc = new RTCPeerConnection({ iceServers: [{ urls: DEFAULT_STUN }] });
+    }
     pcRef.current = pc;
 
     if (earlyIceRef.current.length) {
@@ -3218,12 +3237,36 @@ function SettingsPanel({
   const [screenQuality, setScreenQuality] = useState(loadScreenQuality);
   const [audioInputs, setAudioInputs] = useState([]);
   const [micDevice, setMicDevice] = useState(loadMicDevice);
+  // Kept as a draft and written only on Save, so it is obvious whether a value
+  // has actually been applied.
   const [ice, setIce] = useState(loadIceConfig);
+  const [iceSaved, setIceSaved] = useState(loadIceConfig);
+  const [iceNote, setIceNote] = useState("");
 
-  const updateIce = (patch) => {
-    const next = { ...ice, ...patch };
-    setIce(next);
-    saveIceConfig(next);
+  const iceDirty =
+    ice.turnUrl !== iceSaved.turnUrl ||
+    ice.turnUser !== iceSaved.turnUser ||
+    ice.turnPass !== iceSaved.turnPass;
+
+  const turnLooksWrong =
+    ice.turnUrl.trim() !== "" && !/^(turns?:)?[^\s:]+(:\d+)?/i.test(ice.turnUrl.trim());
+
+  const commitIce = () => {
+    const cleaned = {
+      turnUrl: normalizeTurnUrl(ice.turnUrl),
+      turnUser: ice.turnUser.trim(),
+      turnPass: ice.turnPass,
+    };
+    // Clearing the address removes TURN entirely rather than half-saving it.
+    if (!cleaned.turnUrl) {
+      cleaned.turnUser = "";
+      cleaned.turnPass = "";
+    }
+    saveIceConfig(cleaned);
+    setIce(cleaned);
+    setIceSaved(cleaned);
+    setIceNote(cleaned.turnUrl ? t.settings.turnSaved : t.settings.turnCleared);
+    setTimeout(() => setIceNote(""), 2500);
   };
 
   const updateMicDevice = (id) => {
@@ -3346,7 +3389,7 @@ function SettingsPanel({
           type="text"
           value={ice.turnUrl}
           placeholder={t.settings.turnUrlPlaceholder}
-          onChange={(e) => updateIce({ turnUrl: e.target.value })}
+          onChange={(e) => setIce({ ...ice, turnUrl: e.target.value })}
         />
       </div>
       <div className="settings-row">
@@ -3354,7 +3397,7 @@ function SettingsPanel({
         <input
           type="text"
           value={ice.turnUser}
-          onChange={(e) => updateIce({ turnUser: e.target.value })}
+          onChange={(e) => setIce({ ...ice, turnUser: e.target.value })}
         />
       </div>
       <div className="settings-row">
@@ -3362,8 +3405,21 @@ function SettingsPanel({
         <input
           type="password"
           value={ice.turnPass}
-          onChange={(e) => updateIce({ turnPass: e.target.value })}
+          onChange={(e) => setIce({ ...ice, turnPass: e.target.value })}
         />
+      </div>
+      <div className="settings-row settings-actions">
+        <span className={"settings-note " + (iceNote ? "shown" : "")}>
+          {iceNote || (turnLooksWrong ? t.settings.turnInvalid : "")}
+        </span>
+        <button
+          type="button"
+          className="theme-toggle"
+          disabled={!iceDirty}
+          onClick={commitIce}
+        >
+          {t.settings.turnSave}
+        </button>
       </div>
       <div className="settings-hint">{t.settings.turnHint}</div>
 

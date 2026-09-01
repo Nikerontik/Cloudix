@@ -1224,6 +1224,25 @@ button {
   min-height: 60px;
 }
 
+.settings-actions {
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.settings-note {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  opacity: 0;
+  transition: opacity 0.2s var(--ease-soft);
+}
+
+.settings-note.shown {
+  opacity: 1;
+  color: var(--success);
+}
+
 .settings-hint {
   font-size: 11.5px;
   color: var(--text-tertiary);
