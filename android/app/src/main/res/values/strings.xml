@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Cloudix</string>
+    <string name="service_channel">Соединение</string>
+    <string name="service_running">Cloudix на связи</string>
+    <string name="service_hint">Приложение держит соединение, чтобы сообщения приходили сразу.</string>
+</resources>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The UI is served over http on loopback, because only a trustworthy origin
+     is granted getUserMedia and a call needs camera and microphone. Android 9+
+     blocks cleartext by default, so loopback is allowed back in explicitly and
+     nothing else is. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
