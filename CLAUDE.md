@@ -1,441 +1,287 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repo.
+Guidance for Claude Code when working in this repo. Organised by topic, not by date — the
+hard-won debugging findings are in "Why things are the way they are", and they are the
+most valuable part of this file. Read that section before changing networking or calls.
 
 ## What this is
 
-**Cloudix** — a serverless P2P messenger (Wails v2 desktop app). Works over LAN / Wi-Fi
-or a VPN tunnel (RadminVPN, Hamachi). No central server, no accounts — a local profile
-stored in SQLite. Currently a working first version: text messages, media, reactions,
-read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
-notes, RU/EN i18n, light/dark themes.
+**Cloudix** — a serverless P2P messenger (Wails v2 desktop app) for macOS and Windows.
+Text, media, reactions, read receipts, typing indicator, audio/video calls, screen sharing,
+block list, local "Saved" notes, RU/EN, three themes. No accounts, no company server: the
+profile and history live in a local SQLite file.
 
-## Session state (2026-09-13) — branch `relay-server`
+Three ways two people can reach each other:
 
-Calls work directly across different networks — TURN turned out to be unnecessary for
-that case. **Note for future debugging: app windows launched from the agent's Bash tool
-inherit its restricted network (UDP replies do not come back), which suppresses srflx
-candidates and made the Mac look broken. Have the user launch the app themselves.**
+1. **LAN** — UDP multicast discovery, direct TCP. Zero configuration.
+2. **Cloudix network, direct** — one peer hosts on a public IP + forwarded port; others
+   join with a name, a password and an invite code.
+3. **Cloudix network, via relay** — both peers connect *out* to a relay the user runs
+   themselves. This is what makes it work behind CGNAT.
 
-Fixed this pass:
-- **Chats invisible over the relay.** `handleEnvelope` only created the chat row when
-  `discovery` knew the sender, which it never does over the overlay, so
-  `TouchChatLastMessage` updated nothing. `ensureChatMeta` now falls back to the overlay
-  roster and finally to a placeholder row.
-- **Reconnect after network changes.** `Service` remembers how the session was entered
-  (`sessionParams`) and `Reconnect()` rebuilds it; `RestartNetworking` calls it, and a
-  client that drops unexpectedly retries with backoff. `Leave`/`Dropped` clear the memory
-  so a retry cannot resurrect a session the user ended.
-- **"Room already hosted" after leaving.** `RelayListener.Close` now sends an explicit
-  `bye` so the relay frees the room at once instead of waiting for the idle timeout.
-- **Logout left the overlay running** under a peer id that no longer existed.
-- Unread badge on the "All" tab; docs panel in the sidebar footer.
+## Current state (2026-09-13)
 
-## Older session state (2026-09-12) — branch `relay-server`
-
-Relay is deployed and working (messages, reactions). Fixed and added this pass:
-
-- **Stale roster after the host leaves.** `Client.OnClosed` set an error but left
-  `s.members` populated, so peers stayed "online" and messages queued against nobody —
-  which is what produced the clock icons the user saw. It now clears the roster and role;
-  `Service.Dropped` exists for transport-level failures. Covered by `TestMemberSeesHostLeave`.
-- **Calls over the relay need TURN.** Diagnostics showed `peer-ip: (unknown)` and the Mac
-  gathering `host:4` with no srflx. `app.peerIP()` only knows LAN sources, so over the
-  overlay the mDNS rewrite has no address to substitute — but that is secondary: with both
-  peers behind CGNAT, no amount of candidate fixing helps, because neither router accepts
-  unsolicited traffic. ICE servers are now user-configurable (Settings → Calls over the
-  internet, `cloudix:ice` in localStorage) and README documents coturn on the same VPS.
-  **Do not hardcode a TURN server** — same principle as the relay.
-- `.github/workflows/relay.yml` publishes stripped relay binaries plus SHA256SUMS on tag,
-  so servers can be set up with curl instead of scp.
-- Relay reads `CLOUDIX_RELAY_TOKEN` from the environment; the flag leaks the secret to
-  `ps` and `systemctl cat`.
-
-## Older session state (2026-09-11) — branch `relay-server`
-
-`main` holds the pure P2P build (LAN + direct-hosted overlay). This branch adds the
-**optional relay** for people behind CGNAT, who cannot host at all.
-
-- `cmd/cloudix-relay` — standalone server for a VPS. Pairs two TCP connections naming the
-  same room and copies bytes. Knows nothing else.
-- `backend/vpn/relay.go` — client side. `RelayListener` implements `net.Listener`, so
-  `Host.acceptLoop` is untouched; `Client.handshake` was split out of `Connect` so it runs
-  identically over a dialled or relayed connection.
-- **The relay is user-supplied, never hardcoded.** Address + token live in `localStorage`
-  under `cloudix:relay` and are entered in the network panel. Do not add a default server.
-- Relay security: addressed by the blinded network id, takes no part in authentication,
-  holds no key, forwards already-sealed bytes. Its `-token` guards bandwidth, not
-  confidentiality — the UI says so explicitly, keep it that way.
-- Hosts ping the relay every 15s; the relay releases a room after 45s of silence, so a
-  host restart can re-register instead of waiting for TCP to time out.
-- Tests build and run the real relay binary: end-to-end through it, wrong-token rejection,
-  and room release after the host leaves.
-
-## Older session state (2026-09-10)
-
-- Built the **overlay network** (`backend/vpn`) — Cloudix's own answer to "use RadminVPN
-  to talk over the internet". See "Overlay network" below for the design and its limits.
-- First Go tests in the repo live in `backend/vpn/service_smoke_test.go` (real handshake,
-  membership, end-to-end relay, wrong-password rejection, invite round trip). Run with
-  `go test ./backend/vpn/`.
-
-## Overlay network (backend/vpn)
-
-**What it is not.** Not a system VPN. A real one needs a virtual adapter, meaning a signed
-kernel driver on Windows and a Network Extension entitlement on macOS, plus admin rights —
-none of which a self-signed app can ship. This carries Cloudix's own traffic only; other
-apps and games are not routed.
-
-**Shape.** One peer hosts (`Host`), others join (`Client`). The host relays between
-members. No third-party server: the host is the rendezvous point, reachable via a NAT-PMP
-port mapping when the router allows it, otherwise a manual TCP 47991 forward.
-
-**Crypto.**
-- `DeriveNetworkKey` = Argon2id(password, salt = blake2b(normalised name)), 64 MiB / t=3.
-- Only `NetworkID` — a blinded hash of that key — goes on the wire. Name and password never do.
-- **Authentication is implicit**: the network key is folded into the HKDF salt that derives
-  every link key, so a wrong password yields a different key and the first sealed frame
-  simply fails to open. There is no password check to bypass.
-- Links and member-to-member payloads use XChaCha20-Poly1305 (random 24-byte nonces, no
-  counter state to mismanage) over X25519 ECDH.
-- `E2EKey` sorts the two public keys so both sides derive the same value; the **host cannot
-  read what it relays** because it holds neither private key.
-- Identity keys are pinned trust-on-first-use in `vpn_pins`; a changed key is refused and
-  reported, which is what a host attempting interception would look like. Users can compare
-  `Fingerprint()` out of band.
-
-**Routing.** `app.deliver(peerID, env)` is now the single send path: LAN transport first,
-overlay as fallback, and overlay-only peers go straight there. Overlay members appear in
-`GetOnlinePeers()` with `ViaVPN: true`. Calls work over it because signalling rides the
-overlay while WebRTC media goes direct via STUN — no virtual adapter needed.
-
-**Gotcha.** Invite codes carry the network name and host address but **never the password**,
-so a leaked code alone grants nothing. Keep it that way.
-
-## Older session state (2026-09-09)
-
-- Settings now apply **during a call**, not just to the next one. Screen quality already
-  did (`applyScreenEncoding` on `SCREEN_QUALITY_EVENT`); added the same for the microphone
-  (`MIC_DEVICE_EVENT` → `switchMicrophone`) and the share's audio source
-  (`switchScreenAudio`). Both use `sender.replaceTrack()`, which swaps the encoder input
-  with no renegotiation and no audible gap; only *adding* a share audio track where none
-  existed needs a renegotiation.
-- Window minimum dropped to 620×460 with responsive breakpoints at 900 / 760 / 640 px wide
-  and 560 px tall (sidebar narrows, chrome gives ground, connection badge collapses to its
-  dot). Any new fixed-width UI needs a breakpoint entry or it will overflow a small window.
-
-## Older session state (2026-09-08)
-
-- Screen share could show a **black square** whenever a share was stopped and restarted,
-  or when the second peer started sharing while the first already was. Cause: `ontrack`
-  does **not** fire again when a transceiver is reused, so the receiver never learned the
-  new track and matched the peer's announced track id against nothing. Fixed by anchoring
-  the share to the **transceiver mid** (stable across renegotiation, unlike track ids):
-  `announceScreen()` re-sends `screen-on` after every negotiation once the mid exists, and
-  `resolveScreenTracks()` sweeps `pc.getReceivers()` instead of trusting `ontrack`.
-- Added a microphone picker (Settings → Audio, `cloudix:mic-device`), falling back to the
-  system default if the remembered device is gone.
-
-## Older session state (2026-09-07)
-
-- **Intermittent call failure root-caused: TCP connection glare.** Diagnostic showed the
-  Mac stuck in `have-local-offer` with `cand recv: 0` while Windows was `stable` with
-  `cand sent: 9` — the whole Windows→Mac signal stream was gone, not just candidates.
-  Both peers dial each other during call setup; `transport.readLoop` used to close any
-  existing connection when registering a new inbound one, so crossed dials made each side
-  close the socket the other had just chosen to write on. Fixed by keeping both sockets:
-  reads are served by every connection, writes go to the most recent one.
-- Also this pass: encoder-side resolution enforcement, macOS screen-share audio via a
-  loopback device, native save dialog for chat media, 30s call timeout message.
-
-## Known platform limits
-
-- **macOS cannot share system audio.** WebKit's `getDisplayMedia` returns no audio track.
-  The workaround, wired into Settings → Screen sharing → Share audio, is to install a
-  loopback driver (BlackHole etc.), route output into it and select it as the audio
-  source; it is then captured with `getUserMedia` and added to the screen stream.
-- **`getDisplayMedia` ignores resolution constraints on macOS** — it returns the native
-  display size. The resolution setting is therefore enforced encoder-side by computing
-  `scaleResolutionDownBy` from `track.getSettings().height`.
-- **WKWebView ignores the HTML `download` attribute for data: URLs**, which is why the
-  chat download button did nothing on macOS. Media now goes through the bound
-  `SaveMedia(name, dataURL)` method and a native save dialog on both platforms.
-
-## Older session state (2026-09-06)
-
-- **Calls now work** (Mac ↔ Windows, LAN) and screen share works. `main` was fast-forwarded
-  to `dev` at `7cb8c6b`; work continues on `dev`.
-- This pass: screen-share encoding rework — see "Screen share quality" below.
-
-## Screen share quality
-
-The encoder profile is user-configurable (Settings → Screen sharing) and persisted in
-`localStorage` under `cloudix:screen-quality`: resolution (720/1080/1440), framerate
-(15/30/60), priority (balanced / detail / motion) and a bitrate cap (2–30 Mbps, default 12).
-
-Two things mattered for the blocky, stuttering picture:
-
-1. **`setParameters` does not survive a renegotiation.** The cap was applied once at
-   `addTrack` and then silently lost, dropping the encoder back to its default ceiling.
-   `applyScreenEncoding()` is now re-applied after every answer as well.
-2. The old profile hard-coded `maintain-resolution` + `contentHint: "detail"`, which
-   spends the framerate first under load. `mode` maps to `degradationPreference` +
-   `contentHint`, so the user picks the tradeoff.
-
-Changing the profile dispatches a `cloudix:screen-quality-changed` window event, so a
-live share picks it up without renegotiating. The viewer panel and the presenter's call
-card show the real `resolution · fps · bitrate` from `getStats()`.
-
-## Older session state (2026-09-05)
-
-**Root cause of the flaky calls found.** Diagnostics from a failed attempt:
-Mac `cand sent:1  cand recv:0 added:0 rejected:0  ice-conn:new  remote-cand:none`,
-Windows `cand sent:2  cand recv:1 added:1 rejected:0  ice-conn:checking`.
-
-`rejected: 0` cleared the mDNS rewrite of suspicion — nothing was being refused. The Mac
-simply **never received** the candidates Windows sent. `onSignalIncoming` dispatched to
-`signalHandlersRef`, but an incoming offer creates `callState` and `CallModal` only
-registers its handler on mount; every signal landing in that gap — in practice the first
-burst of ICE — was dropped on the floor. That is why roughly one call in ten connected.
-Fixed by buffering signals in `pendingSignalsRef` and replaying them to the first handler
-that registers (the offer is excluded, it already travels as `incomingOffer`).
-`iceCandidatePoolSize` was also removed — it pre-gathered before negotiation and made the
-stats misleading. Diagnostics now also report `cand queued`.
-
-If calls still fail, the next suspects are Windows Firewall dropping inbound UDP and the
-Mac gathering no srflx candidate (STUN unreachable from that machine).
-
-## Older session state (2026-09-04)
-
-**Mac ↔ Windows calls still fail.** First real diagnostics (both sides, `ice-conn: checking`,
-`pair: none succeeded yet`):
-
-| | Mac | Windows |
+| Branch | Commit | Contents |
 |---|---|---|
-| local candidates | `host:4` (no srflx — STUN unreachable) | `host:8 srflx:1` |
-| remote candidates | `srflx:1` | `host:1` |
+| `main` | `2ac6e18` | Pure P2P: LAN + direct-hosted overlay. No relay. |
+| `dev` | `2ac6e18` | Same as main. |
+| `relay-server` | `d091e97` | **Active branch.** Adds the optional relay server. |
 
-Both hosts are on the same /24 (`192.168.10.248` / `.132`). The signalling channel is
-reliable TCP and messaging works, so **candidates are being lost after delivery** — almost
-certainly rejected by `addIceCandidate` (the old code swallowed those errors). Mac accepted
-none of Windows' 8 host candidates; those are exactly the mDNS-rewritten ones.
+Working and confirmed by the user: messages, media, reactions, screen sharing, and
+**calls across different networks** (which turned out not to need TURN in their case).
+The relay is deployed on their VPS and carries messages.
 
-This pass: `addRemoteCandidate` now tries the rewritten form, the original form, and a
-BUNDLE-normalised form (`sdpMid` forced to the first mid), counting sent / received /
-added / rejected plus the last rejection error and candidate — all shown in the call
-diagnostics panel. **Next test must report `cand sent/recv/added/rejected` and
-`reject err` from both sides.** Also added two more STUN servers (the Mac got no srflx).
-
-Not yet ruled out: Windows Firewall dropping inbound UDP for the app, WebKit refusing a
-rewritten candidate outright.
-
-## Older session state (2026-09-03)
-
-- Mac ↔ Windows LAN calls **still fail** after the first mDNS fix. Second pass added:
-  candidate rewriting inside the offer/answer **SDP** (not just trickled ICE), and a live
-  **diagnostics panel** in the call card (ICE/connection states, candidate counts by type,
-  the selected candidate pair) with a copy button. **Ask the user to open it on both sides
-  and paste the output** — that is the fastest way to find the real blocker now.
-- Added: screen sharing, custom Windows title bar (app is frameless on Windows now),
-  sidebar footer height matched to the composer.
-- **Next step (user):** re-test calls + screen share across two machines.
-
-## Screen sharing
-
-The viewer's **"expand" fills the app window; it deliberately does not use the native
-Fullscreen API** — `requestFullscreen` is a no-op in WKWebView and blacked out the entire
-window in WebView2. The panel is centred by a flex layer (`.screen-layer`) rather than a
-CSS transform, because framer-motion owns `transform` for dragging. `.screen-stage` holds
-`aspect-ratio: 16/9` so the panel keeps its shape before the first frame, and a spinner
-placeholder shows until `videoWidth > 0`. Panel width is drag-resizable from the corner and
-persisted in `localStorage` (`cloudix:screen-width`).
-
-`getDisplayMedia` at 1080p60 with `contentHint = "detail"`, `maintain-resolution` and an
-8 Mbps cap. WebRTC carries no notion of "this track is a screen", so the presenter sends a
-`screen-on` signal listing the track ids (`screen-off` on stop). The receiver keeps two
-MediaStreams — camera/voice and screen — and `routeTrack()` moves tracks between them;
-`receivedTracksRef` lets a late `screen-on` reclassify tracks that already arrived. The
-share's audio rides on the screen `<video>` element, which is why its volume slider is
-independent of the call volume. Adding/removing tracks triggers `renegotiate()`
-(`renegotiate-offer` / `renegotiate-answer`).
-
-## Older session state (2026-09-02)
-
-- Two-machine testing found: **Mac ↔ Windows calls on a plain LAN never connected** —
-  offer/answer completed (both sides showed "calling") but ICE never did. Root cause:
-  WebViews publish host ICE candidates as `<uuid>.local` **mDNS** names, and macOS WebKit
-  and Windows WebView2 can't resolve each other's names. Windows ↔ Windows worked because
-  both run the same resolver. **Fixed** by rewriting inbound `.local` candidates with the
-  peer's real IP (see "Call ICE" below).
-- Also in this pass: liquid-glass redesign, pink theme, platform-aware window chrome,
-  emoji picker, draggable non-blocking call window, data-folder/version surfacing.
-- **Next step (user):** re-test Mac ↔ Windows and Windows ↔ Windows (RadminVPN) calls.
-
-## Call ICE (why calls used to fail cross-platform)
-
-`app.peerIP(peerID)` resolves a peer's real address — live TCP connection first
-(`transport.RemoteIP`), then discovery. Every `signal:incoming` event carries it as
-`peerIp`. In `CallModal`, `rewriteMdnsCandidate()` swaps the `.local` hostname in field 4
-of an inbound ICE candidate for that IP before `addIceCandidate`. Both peers do this, so
-each side ends up with a directly usable host candidate. Keep `peerIpRef` fed from every
-signal — don't rely on the seed from discovery alone.
-
-## Stack
-
-- **Backend:** Go 1.25 (`go.mod` says `go 1.25.0`), Wails v2.13, SQLite via
-  `modernc.org/sqlite` (pure Go, no cgo). Uses `golang.org/x/sys` (direct) for
-  SO_REUSEADDR/REUSEPORT socket control in discovery.
-- **Frontend:** React 18 + Vite 5, Framer Motion. Single big component file.
-- **Transport:** newline-delimited JSON over TCP (`backend/transport`). Frame cap
-  `maxLineBytes` = 96 MiB; oversized frames are skipped, not fatal. 10s write deadline.
-- **Discovery:** UDP multicast `239.255.42.99:47990` + unicast fallback on `47990`
-  (for VPN tunnels where multicast isn't forwarded). Shared port const `discovery.UDPPort`.
-- **Calls:** WebRTC; signaling (offer/answer/ICE) is tunneled through the same TCP transport
-  as `signal` envelopes. STUN only (`stun.l.google.com:19302`), no TURN.
-
-## Layout
-
-```
-main.go                     Wails bootstrap + window options
-backend/app/app.go          All Wails-bound methods + inbound envelope router (handleEnvelope)
-backend/transport/          TCP manager: dial/accept, conn pool keyed by peerId, send w/ 1 retry
-backend/discovery/          UDP multicast + unicast announce/listen, peer TTL, manual targets
-backend/models/models.go    Wire types, envelope + signal kind constants
-backend/storage/storage.go  SQLite: profile, chats, messages, blocklist. Migrations = CREATE IF NOT EXISTS + best-effort ALTER
-frontend/src/App.jsx        ~2200 lines: entire UI (Onboarding, Sidebar, ChatWindow, CallModal, ProfilePanel, Settings, App)
-frontend/src/i18n.js        RU/EN dictionary (incomplete — see gotchas)
-frontend/wailsjs/           Generated bindings (committed). Regenerated by wails on build/dev.
-```
+TURN is implemented and configurable but the user has not needed it yet; coturn setup is
+documented in the README for the case where both peers are behind CGNAT.
 
 ## Build / run
 
 ```bash
-wails dev                              # dev mode, hot reload
-wails build -platform darwin/universal # -> build/bin/Cloudix.app
-wails build -platform windows/amd64    # -> build/bin/Cloudix.exe (build on Windows / CI, no cross-compile)
+wails dev                                # hot reload
+wails build -platform darwin/universal   # -> build/bin/cloudix.app  (lowercase!)
+wails build -platform windows/amd64      # -> build/bin/cloudix.exe
 
-go build ./...                         # backend compiles (needs frontend/dist to exist for the embed)
-cd frontend && npm run build           # frontend only; output frontend/dist is gitignored
+# relay server for a VPS
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+  -o build/bin/cloudix-relay-linux-amd64 ./cmd/cloudix-relay
+
+go build ./...              # needs frontend/dist to exist (go:embed)
+cd frontend && npm run build
+go test ./backend/vpn/      # the only tests; they run the real relay binary
+go vet ./...                # clean, keep it that way
 ```
 
-`go test ./backend/vpn/` covers the overlay; the rest has no tests yet. `go vet ./...` is clean.
+### ⚠️ Do not launch the app for the user from Bash
 
-Run two local instances for P2P testing: give each a separate DB dir via
-`CLOUDIX_INSTANCE` (env, honored by `storage.dbPath` → `~/Library/Application Support/
-Cloudix-<val>/`), e.g.
+Windows started from the agent's Bash tool **inherit its restricted network**: UDP replies
+never come back, so no srflx ICE candidates are gathered. This made a working Mac look
+broken and cost several rounds of misdiagnosis. Build for the user, but let them run it:
+
+```
+open build/bin/cloudix.app
+```
+
+Launching two instances to smoke-test that the app *starts* is fine; drawing conclusions
+about its networking from them is not.
+
+### Two local instances
+
+`CLOUDIX_INSTANCE=<x>` gives a separate DB dir (`~/Library/Application Support/Cloudix-<x>/`).
 
 ```bash
 BIN=build/bin/cloudix.app/Contents/MacOS/cloudix
-CLOUDIX_INSTANCE=a "$BIN" &
-CLOUDIX_INSTANCE=b "$BIN" &
+CLOUDIX_INSTANCE=a "$BIN" & CLOUDIX_INSTANCE=b "$BIN" &
 ```
 
-Messages/media/etc. work this way; **calls do not connect between two instances on one
-machine** (ICE fails — see "Still open"). Real call testing needs two machines.
+Messages work this way. **Calls between two instances on one machine do not** — both
+resolve to the same IP and the loopback path is unreliable. Real call testing needs two
+machines.
+
+## Layout
+
+```
+main.go                      Wails bootstrap; Frameless on Windows only
+backend/app/app.go           All bound methods + handleEnvelope router (~1500 lines)
+backend/transport/           TCP: dial/accept, conn pool by peerId, 96 MiB frame cap
+backend/discovery/           UDP multicast + unicast announce/listen, peer TTL
+backend/models/models.go     Wire types, envelope + signal kind constants
+backend/storage/storage.go   SQLite. Migrations = CREATE IF NOT EXISTS + best-effort ALTER
+backend/vpn/                 Overlay network: crypto, host, client, relay transport, invites
+cmd/cloudix-relay/           Standalone relay server for a VPS
+frontend/src/App.jsx         Entire UI (~4700 lines, single file)
+frontend/src/i18n.js         RU/EN dictionary — complete, keep it that way
+frontend/src/styles/theme.css All CSS (~2700 lines), token-driven
+frontend/wailsjs/            Generated bindings, committed; `wails build` regenerates
+```
+
+## Stack
+
+- **Go 1.25**, Wails v2.13, SQLite via `modernc.org/sqlite` (pure Go, no cgo).
+  `golang.org/x/crypto` (argon2, chacha20poly1305, curve25519, hkdf, blake2b) and
+  `golang.org/x/sys` are direct dependencies.
+- **React 18 + Vite 5 + Framer Motion.** One component file.
+- **Transport:** newline-delimited JSON over TCP. Oversized frames are skipped, not fatal.
+- **Discovery:** UDP multicast `239.255.42.99:47990` + unicast fallback on the same port.
+- **Calls:** WebRTC. Signalling rides the normal envelope channel. STUN by default,
+  **TURN optional and user-configured** (`cloudix:ice`).
 
 ## Conventions
 
-- Bound method names are PascalCase on `*App`; every one re-checks `a.store != nil` /
-  `a.getProfile() != nil` and returns a plain `fmt.Errorf`. Keep that pattern.
-- Outbound network sends that can block should run in a goroutine and report failure via
-  `a.emitEvent(...)` (see `SendSignal`), NOT by blocking the bound call.
-- Frontend talks to Go only through `import * as WailsApp from "../wailsjs/go/app/App"` and
-  `EventsOn(...)`. Event names: `peers:update`, `message:incoming|deleted|read|reacted|delivered`,
-  `ping:result`, `profile:updated`, `account:deleted`, `signal:incoming`, `signal:send_error`.
-- After adding/changing a bound method or a `models.*` struct, regenerate bindings
-  (`wails build` does it) and keep `frontend/wailsjs/go/` in sync (`App.js`, `App.d.ts`,
-  `models.ts`). `NetworkReady() bool` is bound and used for the connection badge.
-- Message delivery: `SendMessage` inserts `delivered=0`, sends in a goroutine
-  (`trySendMessage`), marks `delivered=1` + emits `message:delivered` on success.
-  `deliveryFlushLoop` (5s ticker, also poked from `onNewPeerDiscovered` and on inbound
-  message) retries `ListAllUndelivered` rows only when the peer is live / has an open conn.
-- Reactions: `reaction` = mine, `reaction_peer` = theirs. `SetMessageReaction(id, emoji, mine)`.
-- New user-facing strings must go through `t.*` in `i18n.js` (both `ru` and `en`).
-  **Never store a localized string in the DB** — chat-list media previews are
-  locale-neutral tokens (`models.PreviewImage/Video/File`) rendered via
-  `previewText(raw, t)`. That was a real bug: Russian previews leaked into the English UI.
-- **Themes:** `dark` (default) · `light` · `pink` (pastel, light-only), cycled by
-  `ThemeButton` and stamped on `<html data-theme>`. Theme + language persist in
-  `localStorage` (`cloudix:theme`, `cloudix:lang`). Adding a theme = add to `THEMES` +
-  `THEME_ICON` in `App.jsx`, a `[data-theme="…"]` token block in `theme.css`, and
-  `t.theme.<name>`.
-- **Platform chrome:** `<html data-platform>` is set from a UA guess before first paint,
-  then confirmed via Wails `Environment()`; `App` also keeps it in a `platform` state.
-  macOS keeps the native traffic lights (`TitleBarHiddenInset`) and the rounded shell.
-  **Windows runs frameless** (`main.go` sets `Frameless: goruntime.GOOS == "windows"`) and
-  renders `WindowsTitlebar` — our own bar with minimise/maximise/close wired to the Wails
-  runtime. `AppTitlebar` picks the right one and must be used on every root screen
-  (app, onboarding, disclaimer) — a frameless window with no bar cannot be closed.
-  Corners stay square on Windows: the window is opaque, so CSS rounding shows black.
-  Any window-chrome CSS must be gated on `[data-platform=…]` so macOS is unaffected.
-- CSS lives entirely in `frontend/src/styles/theme.css`, driven by custom properties on
-  `:root` / `[data-theme]`. Use the tokens (`--panel`, `--border`, `--accent`, `--shadow-*`,
-  `--ease`), not literal colors, or a new theme will not pick the change up.
-- Comments in the code marked `FIX:` / `NEW:` document past bug fixes — leave them.
-- Don't commit build artifacts. `/cloudix` and `/cloudix.exe` are gitignored.
+- Bound methods are PascalCase on `*App`, re-check `a.store != nil` / `a.getProfile()`,
+  and return a plain `fmt.Errorf`.
+- **`a.deliver(peerID, env)` is the single outbound path** for every envelope type: LAN
+  transport first, overlay as fallback, overlay-only peers straight through. Do not call
+  `transport.Send` directly in new code.
+- Sends that can block go in a goroutine and report failure via `a.emitEvent`, never by
+  blocking the bound call.
+- After changing a bound method or a `models.*` struct, regenerate bindings (`wails build`)
+  and keep `frontend/wailsjs/go/` committed in sync.
+- New user-facing strings go through `t.*` in **both** `ru` and `en`.
+  **Never store a localized string in the DB** — media previews are neutral tokens
+  (`models.PreviewImage/Video/File`) rendered by `previewText(raw, t)`.
+- CSS only in `theme.css`, using the custom properties (`--panel`, `--accent`, `--ease`…).
+  A literal colour will not follow the themes.
+- Any new fixed-width UI needs an entry in the responsive breakpoints (900 / 760 / 640 px
+  wide, 560 px tall) or it overflows the 620×460 minimum window.
+- `FIX:` / `NEW:` comments document past bugs — leave them.
 
-## Fixed in the 2026-09-01 audit pass
+### Events (Go → JS)
 
-1. `OnBeforeClose` wired into `wails.Run` (`main.go`) — goodbye announce + clean shutdown.
-2. Transport frame cap raised to 96 MiB and switched from `bufio.Scanner` to a
-   `bufio.Reader` loop that *skips* an oversized frame instead of killing the connection;
-   25 MB attachment guard in the frontend (`MAX_ATTACHMENT_BYTES`).
-3. CI (`build.yml`) → Go 1.25, node 20, pinned wails, `windows` + `macos` matrix. README too.
-4. `SendMessage` network send moved to a goroutine + 10s write deadline in transport.
-6. `discovery` Start/Stop/Restart serialized by `runMu`; loop goroutines take their stop
-   channel by value so a Restart cleanly retires the old generation.
-7. `unicastListenLoop` now binds via `net.ListenConfig{Control: reuseControl}`
-   (SO_REUSEADDR + SO_REUSEPORT on unix, SO_REUSEADDR on windows —
-   `reuse_unix.go` / `reuse_windows.go`).
-8. Call: only tears down on `failed`; `disconnected` gets an 8s grace timer. Phase is
-   also promoted to "connected" via `oniceconnectionstatechange` (fallback for WebViews
-   where `RTCPeerConnection.connectionState` isn't implemented — otherwise media connects
-   but the UI stays stuck on "calling").
-9. Call: `drainPendingIce()` called after every `setRemoteDescription`, incl. the callee.
-10. i18n: `en` filled out; RU literals in `App.jsx` routed through `t.*`.
-11. Per-user reactions: `reaction` (mine) + `reaction_peer` (theirs) columns.
-12. Offline delivery: `delivered` column + `deliveryFlushLoop` retry (see Conventions).
-13. Incoming/echoed messages sorted by `ts` and de-duped by `id` in the reducers.
-15. `Logout()` removes the `cloudix:saved-messages:<peerId>` localStorage key.
-16. `.gitignore` fixed; `/cloudix` untracked (`git rm --cached`) and ignored.
-17. `discovery.UDPPort` const used in `app.go` instead of the `"47990"` literal.
-18. Connection badge driven by `NetworkReady()`; `initNetworking` failure shows "disconnected".
+`peers:update` · `message:incoming|deleted|read|reacted|delivered` · `ping:result` ·
+`profile:updated` · `account:deleted` · `signal:incoming` · `signal:send_error` ·
+`vpn:status`
 
-## Fixed in the 2026-09-02 UX pass
+### localStorage keys
 
-- **Cross-platform calls**: mDNS ICE candidate rewrite (see "Call ICE" above).
-- **i18n leak**: media previews are locale-neutral tokens now, not stored Russian strings.
-- Liquid-glass redesign of `theme.css` (token-driven, 3 themes, aurora backdrop, springy
-  motion throughout).
-- Windows chrome: no self-rounding (black corners), no dead 38px mac inset.
-- Emoji picker in the composer; `ThemeButton` in the sidebar brand row and onboarding.
-- Call window is draggable (`useDragControls` on a handle) and no longer blocks the app —
-  `.call-overlay` is `pointer-events: none`, only the card is interactive.
-- Sidebar footer: compact Settings + GitHub button, fixed 52px height.
-- Settings shows `AppVersion()` and `GetDataDir()` with an `OpenDataFolder()` button, so a
-  stale side-by-side install is visible instead of silently confusing.
-- Default window 1340×880 (was 1180×760).
+`cloudix:theme` · `cloudix:lang` · `cloudix:relay` · `cloudix:ice` · `cloudix:mic-device` ·
+`cloudix:screen-quality` · `cloudix:screen-width` · `cloudix:saved-messages:<peerId>`
 
-## Still open (deferred, by design or scope)
+Settings that must apply mid-call dispatch a window event rather than waiting for a
+restart: `cloudix:screen-quality-changed`, `cloudix:mic-changed`.
 
-- **5. No sender authentication.** `env.SenderID` is still an unverified string — a
-  same-network host can spoof messages/deletes/`account_deleted`/reactions or inject
-  `end`/`reject` into a call given the `callId`. Documented as the threat model in README
-  (trusted network only). A real fix = per-peer TOFU keypin + envelope signatures.
-- **14. No message pagination** — a whole chat (media inline as base64) still loads into
-  memory on open. Fine for now; revisit if chats get large.
-- `models.SignalPayload.Name/Username` exist but are never populated; the incoming-call
-  screen derives the name from discovery/chat metadata instead. Harmless dead fields.
-- Pre-existing lockless access to `a.store` / `a.transport` / `a.discovery` across
-  goroutines vs `Logout()` nil-assignment. New code snapshots into locals to match the
-  existing style; a full fix would need an RWMutex around those fields.
-- **Mac ↔ Windows calls still do not connect** (as of 2026-09-03). Signalling completes,
-  ICE does not. Both the trickled-candidate and SDP-level mDNS rewrites are in place, so
-  the next step is data, not more guessing: have the user open the call diagnostics panel
-  on both machines and report `ice-conn`, the candidate counts and the selected pair.
-  Things not yet ruled out: Windows Firewall dropping inbound UDP for the app, the two
-  hosts being on different subnets/VLANs, or WebKit refusing the rewritten candidates.
-- **Calls between two instances on one Mac** may also not reach "connected" — two WebViews
-  on one host resolve to the same IP and the loopback path is flaky. Use two machines.
-- No TURN server, STUN only — peers behind symmetric NAT on different networks won't
-  connect. Fine for the LAN/VPN threat model.
+## The overlay network (`backend/vpn`)
+
+**Not a system VPN.** A real one needs a virtual adapter — signed kernel driver on Windows,
+Network Extension entitlement on macOS, admin rights on both. This carries Cloudix's own
+traffic only; games and other apps are not routed. Say so plainly when asked.
+
+**Shape.** One peer is the `Host`, others are `Client`s; the host relays between members.
+In direct mode the host listens on TCP 47991 (NAT-PMP port mapping attempted, manual
+forward documented). In relay mode both sides dial out to `cloudix-relay`.
+
+**Crypto.**
+- `DeriveNetworkKey` = Argon2id(password, salt = blake2b(normalised name)), 64 MiB, t=3.
+- Only `NetworkID` — a blinded hash of that key — goes on the wire.
+- **Authentication is implicit.** The network key is folded into the HKDF salt behind every
+  link key, so a wrong password derives a different key and the first sealed frame simply
+  fails to open. There is no check to bypass.
+- XChaCha20-Poly1305 with random 24-byte nonces over X25519 ECDH.
+- `E2EKey` sorts the two public keys so both sides agree; **the host cannot read what it
+  relays** because it holds neither private key.
+- Identity keys are pinned TOFU in `vpn_pins`. A changed key is refused and surfaced — that
+  is what interception looks like. `Fingerprint()` is shown in the UI for out-of-band
+  comparison.
+
+**Invite codes carry the network name and host address but never the password.** Keep it
+that way: a leaked code alone must grant nothing.
+
+**Session memory.** `Service` records how the session was entered (`sessionParams`);
+`Reconnect()` rebuilds it after a network change, and a client that drops retries with
+backoff. `Leave()`/`Dropped()` clear that memory so a pending retry cannot resurrect a
+session the user ended.
+
+## The relay (`cmd/cloudix-relay`)
+
+Deliberately dumb and untrusted. It pairs two TCP connections naming the same room and
+copies bytes. It is addressed by the blinded network id, takes no part in authentication,
+holds no key, and forwards already-sealed bytes.
+
+- **The relay is user-supplied, never hardcoded.** Address + token live in `cloudix:relay`
+  and are typed into the network panel. Do not add a default server.
+- `-token` guards the server's bandwidth, **not** confidentiality. The UI says so; keep it.
+- Prefer `CLOUDIX_RELAY_TOKEN` over the flag: a flag is visible in `ps` and `systemctl cat`.
+- Hosts ping every 15s; the relay releases a room after 45s of silence, and
+  `RelayListener.Close()` sends an explicit `bye` so leaving frees the room immediately.
+- `RelayListener` implements `net.Listener`, so `Host.acceptLoop` is unchanged;
+  `Client.handshake` is split out of `Connect` so it runs identically either way.
+
+## Why things are the way they are
+
+Each of these cost real debugging. Do not "simplify" them away.
+
+**ICE candidates are mDNS names.** WebViews publish host candidates as `<uuid>.local`;
+macOS WebKit and Windows WebView2 cannot resolve each other's. `app.peerIP()` finds the
+peer's real address (live TCP connection first, then discovery) and ships it as `peerIp` on
+every `signal:incoming`; `rewriteMdnsCandidate` and `rewriteSdpMdns` substitute it in
+trickled candidates *and* inside offer/answer SDP. `addRemoteCandidate` then tries the
+rewritten form, the original, and a BUNDLE-normalised form, counting what was accepted.
+
+**Signals arriving before `CallModal` mounts were dropped.** An incoming offer creates
+`callState`; the modal only registers its handler on mount, and the first burst of ICE
+lands in that gap. This is why roughly one call in ten used to connect. `pendingSignalsRef`
+buffers and replays to the first handler that registers (the offer is excluded — it travels
+as `incomingOffer`).
+
+**TCP connection glare.** Both peers dial each other during call setup. `readLoop` used to
+close any existing connection when registering an inbound one, so crossed dials made each
+side close the socket the other was about to write on, killing the link in one direction.
+Registration now leaves the existing connection open: reads are served by every connection,
+writes go to the most recent.
+
+**`setParameters` does not survive renegotiation.** The screen-share bitrate cap was
+applied once at `addTrack` and silently lost, dropping the encoder to its default ceiling —
+that was the blocky picture. `applyScreenEncoding()` re-runs after every answer.
+
+**`ontrack` does not fire again when a transceiver is reused.** Stopping and restarting a
+share left the receiver bound to a stale muted track — the black square. The share is
+anchored to the **transceiver mid** (stable across renegotiation, unlike track ids);
+`announceScreen()` re-sends `screen-on` after each negotiation and `resolveScreenTracks()`
+sweeps `pc.getReceivers()` rather than trusting the event.
+
+**Chat rows must be created explicitly over the overlay.** `discovery` only knows LAN
+peers, so an incoming overlay message found no chat row, `TouchChatLastMessage` updated
+nothing, and the conversation stayed invisible. `ensureChatMeta` falls back to the overlay
+roster and then to a placeholder row.
+
+**A malformed ICE server URL throws in the `RTCPeerConnection` constructor**, which took
+down every call rather than just TURN. `normalizeTurnUrl` adds a missing scheme and a
+rejected config falls back to STUN with a message naming the setting.
+
+**`discovery.Restart()` raced.** Loop goroutines now take their stop channel by value and
+Start/Stop/Restart are serialized by `runMu`, so a restart retires the old generation.
+
+**The unicast listener could not bind.** It shares :47990 with the multicast socket, which
+needs SO_REUSEADDR + SO_REUSEPORT via `net.ListenConfig{Control: reuseControl}`
+(`reuse_unix.go` / `reuse_windows.go`).
+
+## Platform limits (not bugs — do not try to fix in code)
+
+- **macOS cannot share system audio.** WebKit's `getDisplayMedia` returns no audio track.
+  Workaround wired into Settings: install a loopback driver (BlackHole), route output into
+  it, select it as the share audio source; it is captured with `getUserMedia`.
+- **`getDisplayMedia` ignores resolution constraints on macOS.** Resolution is enforced
+  encoder-side via `scaleResolutionDownBy` computed from `track.getSettings().height`.
+- **WKWebView ignores the HTML `download` attribute for data: URLs.** Media saving goes
+  through the bound `SaveMedia(name, dataURL)` and a native dialog on both platforms.
+- **`requestFullscreen` is a no-op in WKWebView** and blacked out the whole window in
+  WebView2. The screen viewer's "expand" fills the app window instead.
+- **CGNAT cannot be worked around by router configuration.** If the WAN IP is private
+  (`10.x`, `100.64–100.127`, `192.168.x`) while the public IP differs, hosting is
+  impossible — the answer is a relay, a public IP from the ISP, or the other peer hosting.
+
+## Window chrome
+
+`<html data-platform>` is guessed from the UA before first paint, then confirmed via
+`Environment()`. macOS keeps the native traffic lights (`TitleBarHiddenInset`) and rounded
+shell. **Windows runs frameless** and renders `WindowsTitlebar`. `AppTitlebar` picks the
+right one and **must be used on every root screen** (app, onboarding, disclaimer) — a
+frameless window with no bar cannot be closed. Corners stay square on Windows: the window
+is opaque, so CSS rounding shows black. Gate all chrome CSS on `[data-platform=…]`.
+
+## Still open
+
+- **No sender authentication on the LAN path.** `env.SenderID` is an unverified string, so
+  anyone on the same network can spoof messages, deletes or `account_deleted`. Documented
+  as the threat model (trusted network only) in README and the in-app docs panel. The
+  overlay path *is* authenticated — payloads are sealed with a key only the two peers
+  derive. A LAN fix means per-peer key pinning plus envelope signatures.
+- **No message pagination.** A whole chat, media inline as base64, loads into memory on
+  open.
+- `models.SignalPayload.Name/Username` exist but are never populated. Harmless dead fields.
+- Lockless access to `a.store` / `a.transport` / `a.discovery` versus `Logout()`'s
+  nil-assignment. New code snapshots into locals to match; a real fix needs an RWMutex.
+- The crypto has had no external audit. Primitives are standard; the assembly is not
+  reviewed. Say this plainly rather than implying more assurance than exists.
+
+## Working with this user
+
+- They test on a real Mac ↔ Windows pair and report precise symptoms — take the reports
+  seriously, they have been right about every bug so far.
+- The call diagnostics panel (in the call card) is the fastest path to a root cause: it
+  reports ICE states, candidate counts by type, sent/received/added/rejected, and the
+  selected pair. Ask for it from **both** sides before theorising.
+- They asked for CLAUDE.md to be kept current without being asked each time.
+- Deliverables they expect at the end of a pass: rebuild `build/bin` (macOS app, Windows
+  exe, both relay binaries + `SHA256SUMS`), commit, push, update README if behaviour
+  changed.
+- Answer in Russian.
