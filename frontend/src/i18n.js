@@ -54,6 +54,25 @@ const dict = {
       title: "Сеть Cloudix",
       subtitle:
         "Общайтесь через интернет без RadminVPN: создайте сеть и поделитесь кодом, либо присоединитесь к чужой.",
+      transport: "Способ подключения",
+      direct: "Прямое",
+      viaRelay: "Через сервер",
+      directHint:
+        "Хост принимает подключения сам. Нужен белый IP и открытый порт 47991.",
+      relayHint:
+        "Хост и участники встречаются на вашем сервере-посреднике. Работает за CGNAT, проброс портов не нужен.",
+      relayAddr: "Адрес сервера",
+      relayAddrPlaceholder: "например 203.0.113.7:47992",
+      relayToken: "Ключ доступа к серверу",
+      relayTokenPlaceholder: "если задан на сервере",
+      relayTokenHint:
+        "Ключ ограничивает доступ к вашему серверу, но не защищает переписку — её защищает пароль сети.",
+      relaySecurity:
+        "Сервер-посредник только пересылает байты: ключа сети у него нет, прочитать переписку он не может.",
+      relayOwn:
+        "Сервер запускается вами: соберите cloudix-relay и укажите его адрес здесь. В приложение он не зашит.",
+      viaLabel: "через сервер",
+      directLabel: "напрямую",
       tabCreate: "Создать",
       tabJoin: "Присоединиться",
       name: "Название сети",
@@ -263,6 +282,25 @@ const dict = {
       title: "Cloudix network",
       subtitle:
         "Talk over the internet without RadminVPN: create a network and share the code, or join someone else's.",
+      transport: "Connection method",
+      direct: "Direct",
+      viaRelay: "Via server",
+      directHint:
+        "The host accepts connections itself. Needs a public IP and port 47991 open.",
+      relayHint:
+        "Host and members meet on your relay server. Works behind CGNAT, no port forwarding needed.",
+      relayAddr: "Server address",
+      relayAddrPlaceholder: "e.g. 203.0.113.7:47992",
+      relayToken: "Server access key",
+      relayTokenPlaceholder: "if set on the server",
+      relayTokenHint:
+        "The key limits access to your server; it does not protect the conversation — the network password does.",
+      relaySecurity:
+        "The relay only forwards bytes: it holds no network key and cannot read the conversation.",
+      relayOwn:
+        "You run the server yourself: build cloudix-relay and enter its address here. It is not baked into the app.",
+      viaLabel: "via server",
+      directLabel: "direct",
       tabCreate: "Create",
       tabJoin: "Join",
       name: "Network name",

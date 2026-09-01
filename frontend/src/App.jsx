@@ -56,6 +56,24 @@ const SCREEN_QUALITY_EVENT = "cloudix:screen-quality-changed";
 const MIC_DEVICE_KEY = "cloudix:mic-device";
 
 const MIC_DEVICE_EVENT = "cloudix:mic-changed";
+const RELAY_KEY = "cloudix:relay";
+
+// The relay is user-supplied, never baked into the app — everyone runs their
+// own or borrows one they trust. We only remember what was typed last.
+function loadRelay() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RELAY_KEY) || "{}");
+    return { addr: raw.addr || "", token: raw.token || "", use: !!raw.use };
+  } catch {
+    return { addr: "", token: "", use: false };
+  }
+}
+
+function saveRelay(relay) {
+  try {
+    localStorage.setItem(RELAY_KEY, JSON.stringify(relay));
+  } catch {}
+}
 
 const loadMicDevice = () => readStored(MIC_DEVICE_KEY, "");
 
@@ -725,6 +743,16 @@ function NetworkPanel({ status, t, onClose, onRefresh }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
+  const [relay, setRelay] = useState(loadRelay);
+
+  const useRelay = relay.use;
+  const relayArgs = useRelay ? [relay.addr.trim(), relay.token] : ["", ""];
+
+  const updateRelay = (patch) => {
+    const next = { ...relay, ...patch };
+    setRelay(next);
+    saveRelay(next);
+  };
 
   useEffect(() => {
     if (status?.active) setTab("status");
@@ -802,6 +830,50 @@ function NetworkPanel({ status, t, onClose, onRefresh }) {
                 </button>
               </div>
 
+              <div className="sidebar-tabs net-tabs">
+                <button
+                  type="button"
+                  className={"tab-btn " + (!useRelay ? "active" : "")}
+                  onClick={() => updateRelay({ use: false })}
+                >
+                  {t.net.direct}
+                </button>
+                <button
+                  type="button"
+                  className={"tab-btn " + (useRelay ? "active" : "")}
+                  onClick={() => updateRelay({ use: true })}
+                >
+                  {t.net.viaRelay}
+                </button>
+              </div>
+              <div className="net-hint">
+                {useRelay ? t.net.relayHint : t.net.directHint}
+              </div>
+
+              {useRelay && (
+                <>
+                  <label className="net-field">
+                    <span>{t.net.relayAddr}</span>
+                    <input
+                      type="text"
+                      value={relay.addr}
+                      placeholder={t.net.relayAddrPlaceholder}
+                      onChange={(e) => updateRelay({ addr: e.target.value })}
+                    />
+                  </label>
+                  <label className="net-field">
+                    <span>{t.net.relayToken}</span>
+                    <input
+                      type="password"
+                      value={relay.token}
+                      placeholder={t.net.relayTokenPlaceholder}
+                      onChange={(e) => updateRelay({ token: e.target.value })}
+                    />
+                  </label>
+                  <div className="net-hint">{t.net.relayTokenHint}</div>
+                </>
+              )}
+
               <label className="net-field">
                 <span>{t.net.password}</span>
                 <input
@@ -826,61 +898,84 @@ function NetworkPanel({ status, t, onClose, onRefresh }) {
                   <button
                     type="button"
                     className="onboarding-btn net-action"
-                    disabled={busy || !name.trim() || password.length < 8}
-                    onClick={() => run(() => WailsApp.VPNCreate(name.trim(), password))}
+                    disabled={
+                      busy ||
+                      !name.trim() ||
+                      password.length < 8 ||
+                      (useRelay && !relay.addr.trim())
+                    }
+                    onClick={() =>
+                      run(() => WailsApp.VPNCreate(name.trim(), password, ...relayArgs))
+                    }
                   >
                     {busy ? t.net.creating : t.net.create}
                   </button>
                 </>
               ) : (
                 <>
-                  <div className="sidebar-tabs net-tabs">
-                    <button
-                      type="button"
-                      className={"tab-btn " + (mode === "invite" ? "active" : "")}
-                      onClick={() => setMode("invite")}
-                    >
-                      {t.net.byInvite}
-                    </button>
-                    <button
-                      type="button"
-                      className={"tab-btn " + (mode === "manual" ? "active" : "")}
-                      onClick={() => setMode("manual")}
-                    >
-                      {t.net.byAddress}
-                    </button>
-                  </div>
-
-                  {mode === "invite" ? (
+                  {/* Over a relay both sides meet at the same server, so there
+                      is no host address to enter — only the network name. */}
+                  {useRelay ? (
                     <label className="net-field">
-                      <span>{t.net.invite}</span>
+                      <span>{t.net.name}</span>
                       <input
                         type="text"
-                        value={invite}
-                        placeholder={t.net.invitePlaceholder}
-                        onChange={(e) => setInvite(e.target.value)}
+                        value={name}
+                        placeholder={t.net.namePlaceholder}
+                        onChange={(e) => setName(e.target.value)}
                       />
                     </label>
                   ) : (
                     <>
-                      <label className="net-field">
-                        <span>{t.net.name}</span>
-                        <input
-                          type="text"
-                          value={name}
-                          placeholder={t.net.namePlaceholder}
-                          onChange={(e) => setName(e.target.value)}
-                        />
-                      </label>
-                      <label className="net-field">
-                        <span>{t.net.address}</span>
-                        <input
-                          type="text"
-                          value={addr}
-                          placeholder={t.net.addressPlaceholder}
-                          onChange={(e) => setAddr(e.target.value)}
-                        />
-                      </label>
+                      <div className="sidebar-tabs net-tabs">
+                        <button
+                          type="button"
+                          className={"tab-btn " + (mode === "invite" ? "active" : "")}
+                          onClick={() => setMode("invite")}
+                        >
+                          {t.net.byInvite}
+                        </button>
+                        <button
+                          type="button"
+                          className={"tab-btn " + (mode === "manual" ? "active" : "")}
+                          onClick={() => setMode("manual")}
+                        >
+                          {t.net.byAddress}
+                        </button>
+                      </div>
+
+                      {mode === "invite" ? (
+                        <label className="net-field">
+                          <span>{t.net.invite}</span>
+                          <input
+                            type="text"
+                            value={invite}
+                            placeholder={t.net.invitePlaceholder}
+                            onChange={(e) => setInvite(e.target.value)}
+                          />
+                        </label>
+                      ) : (
+                        <>
+                          <label className="net-field">
+                            <span>{t.net.name}</span>
+                            <input
+                              type="text"
+                              value={name}
+                              placeholder={t.net.namePlaceholder}
+                              onChange={(e) => setName(e.target.value)}
+                            />
+                          </label>
+                          <label className="net-field">
+                            <span>{t.net.address}</span>
+                            <input
+                              type="text"
+                              value={addr}
+                              placeholder={t.net.addressPlaceholder}
+                              onChange={(e) => setAddr(e.target.value)}
+                            />
+                          </label>
+                        </>
+                      )}
                     </>
                   )}
 
@@ -890,13 +985,19 @@ function NetworkPanel({ status, t, onClose, onRefresh }) {
                     disabled={
                       busy ||
                       !password ||
-                      (mode === "invite" ? !invite.trim() : !name.trim() || !addr.trim())
+                      (useRelay
+                        ? !relay.addr.trim() || !name.trim()
+                        : mode === "invite"
+                          ? !invite.trim()
+                          : !name.trim() || !addr.trim())
                     }
                     onClick={() =>
                       run(() =>
-                        mode === "invite"
-                          ? WailsApp.VPNJoinByInvite(invite.trim(), password)
-                          : WailsApp.VPNJoin(name.trim(), password, addr.trim())
+                        useRelay
+                          ? WailsApp.VPNJoin(name.trim(), password, "", ...relayArgs)
+                          : mode === "invite"
+                            ? WailsApp.VPNJoinByInvite(invite.trim(), password, "")
+                            : WailsApp.VPNJoin(name.trim(), password, addr.trim(), "", "")
                       )
                     }
                   >
@@ -915,11 +1016,24 @@ function NetworkPanel({ status, t, onClose, onRefresh }) {
                   <div className="net-network-name">{status.network}</div>
                   <div className="net-role">
                     {status.role === "host" ? t.net.roleHost : t.net.roleMember}
+                    {" · "}
+                    {status.transport === "relay"
+                      ? `${t.net.viaLabel}${status.relayAddr ? " " + status.relayAddr : ""}`
+                      : t.net.directLabel}
                   </div>
                 </div>
               </div>
 
-              {status.role === "host" && (
+              {status.role === "host" && status.transport === "relay" && (
+                <div className="net-block">
+                  <div className="net-hint">{t.net.relaySecurity}</div>
+                  <div className="net-hint">
+                    {t.net.name}: <b>{status.network}</b> — {t.net.shareHint}
+                  </div>
+                </div>
+              )}
+
+              {status.role === "host" && status.transport !== "relay" && (
                 <div className="net-block">
                   {status.invite ? (
                     <>
@@ -997,6 +1111,7 @@ function NetworkPanel({ status, t, onClose, onRefresh }) {
           </div>
 
           <div className="net-hint net-note">🔒 {t.net.security}</div>
+          <div className="net-hint net-note">🖧 {t.net.relayOwn}</div>
           <div className="net-hint net-note">ℹ️ {t.net.notLan}</div>
         </div>
       </motion.div>

@@ -645,8 +645,10 @@ func (a *App) VPNStatus() vpn.Status {
 	return svc.Status()
 }
 
-// VPNCreate starts hosting a network under the given name and password.
-func (a *App) VPNCreate(name, password string) (vpn.Status, error) {
+// VPNCreate starts hosting a network. relayAddr empty means direct hosting on
+// this machine; otherwise the network is registered on that relay, which is how
+// hosting works from behind carrier-grade NAT.
+func (a *App) VPNCreate(name, password, relayAddr, relayToken string) (vpn.Status, error) {
 	svc := a.vpnService()
 	if svc == nil {
 		return vpn.Status{}, fmt.Errorf("overlay not initialized")
@@ -655,11 +657,15 @@ func (a *App) VPNCreate(name, password string) (vpn.Status, error) {
 	if err != nil {
 		return vpn.Status{}, err
 	}
-	return svc.Create(name, password, self, vpn.DefaultPort)
+	return svc.Create(name, password, self, vpn.DefaultPort, vpn.RelayConfig{
+		Addr:  relayAddr,
+		Token: relayToken,
+	})
 }
 
-// VPNJoin connects to a network by name, password and host address.
-func (a *App) VPNJoin(name, password, addr string) (vpn.Status, error) {
+// VPNJoin connects to a network by name and password, either directly to the
+// host address or through a relay when relayAddr is set.
+func (a *App) VPNJoin(name, password, addr, relayAddr, relayToken string) (vpn.Status, error) {
 	svc := a.vpnService()
 	if svc == nil {
 		return vpn.Status{}, fmt.Errorf("overlay not initialized")
@@ -668,11 +674,16 @@ func (a *App) VPNJoin(name, password, addr string) (vpn.Status, error) {
 	if err != nil {
 		return vpn.Status{}, err
 	}
-	return svc.Join(name, password, addr, self)
+	return svc.Join(name, password, addr, self, vpn.RelayConfig{
+		Addr:  relayAddr,
+		Token: relayToken,
+	})
 }
 
-// VPNJoinByInvite connects using an invite code plus the password.
-func (a *App) VPNJoinByInvite(code, password string) (vpn.Status, error) {
+// VPNJoinByInvite connects using an invite code plus the password. The code
+// records which transport the host used, so the joiner follows automatically;
+// a relay token still has to be supplied separately.
+func (a *App) VPNJoinByInvite(code, password, relayToken string) (vpn.Status, error) {
 	svc := a.vpnService()
 	if svc == nil {
 		return vpn.Status{}, fmt.Errorf("overlay not initialized")
@@ -681,7 +692,7 @@ func (a *App) VPNJoinByInvite(code, password string) (vpn.Status, error) {
 	if err != nil {
 		return vpn.Status{}, err
 	}
-	return svc.JoinByInvite(code, password, self)
+	return svc.JoinByInvite(code, password, relayToken, self)
 }
 
 func (a *App) VPNLeave() vpn.Status {

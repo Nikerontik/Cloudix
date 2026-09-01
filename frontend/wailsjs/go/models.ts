@@ -145,6 +145,8 @@ export namespace vpn {
 	    network: string;
 	    members: Member[];
 	    invite: string;
+	    transport: string;
+	    relayAddr: string;
 	    listenPort: number;
 	    publicAddr: string;
 	    portMapped: boolean;
@@ -162,6 +164,8 @@ export namespace vpn {
 	        this.network = source["network"];
 	        this.members = this.convertValues(source["members"], Member);
 	        this.invite = source["invite"];
+	        this.transport = source["transport"];
+	        this.relayAddr = source["relayAddr"];
 	        this.listenPort = source["listenPort"];
 	        this.publicAddr = source["publicAddr"];
 	        this.portMapped = source["portMapped"];

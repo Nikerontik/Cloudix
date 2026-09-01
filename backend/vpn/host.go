@@ -58,7 +58,8 @@ func NewHost(identity *Identity, netName, password string, self Member) *Host {
 func (h *Host) OnMembers(fn func([]Member))     { h.onMembers = fn }
 func (h *Host) OnRelay(fn func(string, []byte)) { h.onRelay = fn }
 
-// Start listens on port (0 picks a free one) and returns the chosen port.
+// Start listens on port (0 picks a free one) and returns the chosen port. This
+// is the direct mode: joiners connect to this machine.
 func (h *Host) Start(port int) (int, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -71,6 +72,24 @@ func (h *Host) Start(port int) (int, error) {
 	go h.expireLoop()
 	return actual, nil
 }
+
+// StartViaRelay hosts through a relay instead of accepting connections here,
+// for when this machine is not reachable from the internet. The relay only ever
+// sees the blinded network id, so it learns nothing about the network.
+func (h *Host) StartViaRelay(relayAddr, token string) error {
+	ln, err := ListenViaRelay(relayAddr, h.networkID, token)
+	if err != nil {
+		return err
+	}
+	h.listener = ln
+
+	go h.acceptLoop(ln)
+	go h.expireLoop()
+	return nil
+}
+
+// RoomID is the blinded identifier the relay uses to pair connections.
+func (h *Host) RoomID() string { return h.networkID }
 
 func (h *Host) Stop() {
 	h.stopOnce.Do(func() { close(h.stopCh) })

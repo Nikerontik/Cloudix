@@ -19,7 +19,7 @@ func TestOverlayEndToEnd(t *testing.T) {
 	aSvc := NewService(aID)
 	bSvc := NewService(bID)
 
-	if _, err := hostSvc.Create(name, pass, Member{PeerID: "H", Name: "host"}, 0); err != nil {
+	if _, err := hostSvc.Create(name, pass, Member{PeerID: "H", Name: "host"}, 0, RelayConfig{}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	defer hostSvc.Leave()
@@ -36,11 +36,11 @@ func TestOverlayEndToEnd(t *testing.T) {
 		}
 	})
 
-	if _, err := aSvc.Join(name, pass, addr, Member{PeerID: "A", Name: "alice"}); err != nil {
+	if _, err := aSvc.Join(name, pass, addr, Member{PeerID: "A", Name: "alice"}, RelayConfig{}); err != nil {
 		t.Fatalf("join A: %v", err)
 	}
 	defer aSvc.Leave()
-	if _, err := bSvc.Join(name, pass, addr, Member{PeerID: "B", Name: "bob"}); err != nil {
+	if _, err := bSvc.Join(name, pass, addr, Member{PeerID: "B", Name: "bob"}, RelayConfig{}); err != nil {
 		t.Fatalf("join B: %v", err)
 	}
 	defer bSvc.Leave()
@@ -79,14 +79,14 @@ func TestWrongPasswordRejected(t *testing.T) {
 	badID, _ := NewIdentity()
 
 	hostSvc := NewService(hostID)
-	if _, err := hostSvc.Create("Net", "the-right-password", Member{PeerID: "H"}, 0); err != nil {
+	if _, err := hostSvc.Create("Net", "the-right-password", Member{PeerID: "H"}, 0, RelayConfig{}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	defer hostSvc.Leave()
 
 	addr := "127.0.0.1:" + itoa(hostSvc.Status().ListenPort)
 	bad := NewService(badID)
-	if _, err := bad.Join("Net", "the-wrong-password", addr, Member{PeerID: "X"}); err == nil {
+	if _, err := bad.Join("Net", "the-wrong-password", addr, Member{PeerID: "X"}, RelayConfig{}); err == nil {
 		bad.Leave()
 		t.Fatal("a wrong password was accepted")
 	}

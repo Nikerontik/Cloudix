@@ -3,11 +3,15 @@ package vpn
 import (
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 )
 
 // DefaultPort is the port a host listens on unless told otherwise.
 const DefaultPort = 47991
+
+// DefaultRelayPort is what cloudix-relay listens on out of the box.
+const DefaultRelayPort = 47992
 
 // Role of this node in the current network.
 const (
@@ -23,6 +27,8 @@ type Status struct {
 	Network     string   `json:"network"`
 	Members     []Member `json:"members"`
 	Invite      string   `json:"invite"`
+	Transport   string   `json:"transport"` // "direct" or "relay"
+	RelayAddr   string   `json:"relayAddr"`
 	ListenPort  int      `json:"listenPort"`
 	PublicAddr  string   `json:"publicAddr"`
 	PortMapped  bool     `json:"portMapped"`
@@ -44,6 +50,8 @@ type Service struct {
 	client     *Client
 	members    []Member
 	invite     string
+	transport  string
+	relayAddr  string
 	listenPort int
 	publicAddr string
 	portMapped bool
@@ -70,8 +78,23 @@ func (s *Service) SetPinStore(get func(string) (string, bool), put func(string, 
 
 func (s *Service) Fingerprint() string { return Fingerprint(s.identity.Public[:]) }
 
-// Create starts hosting a network. port 0 picks a free one.
-func (s *Service) Create(netName, password string, self Member, port int) (Status, error) {
+// Transport selects how members reach the host.
+const (
+	TransportDirect = "direct"
+	TransportRelay  = "relay"
+)
+
+// RelayConfig points at a user-supplied relay. It is deliberately not baked
+// into the app: everyone runs their own, or borrows a trusted one.
+type RelayConfig struct {
+	Addr  string `json:"addr"`
+	Token string `json:"token"`
+}
+
+// Create starts hosting a network. With an empty relay config this listens
+// locally (direct mode); with one, it registers on that relay instead, which is
+// what makes hosting possible from behind carrier-grade NAT.
+func (s *Service) Create(netName, password string, self Member, port int, relay RelayConfig) (Status, error) {
 	if netName == "" || password == "" {
 		return s.Status(), fmt.Errorf("network name and password are required")
 	}
@@ -80,20 +103,34 @@ func (s *Service) Create(netName, password string, self Member, port int) (Statu
 	}
 	s.Leave()
 
-	if port == 0 {
-		port = DefaultPort
-	}
 	host := NewHost(s.identity, netName, password, self)
-	actualPort, err := host.Start(port)
-	if err != nil {
-		// The preferred port may be taken; fall back to any free one.
-		if actualPort, err = host.Start(0); err != nil {
-			return s.Status(), fmt.Errorf("could not open a listening port: %w", err)
-		}
-	}
-
 	host.OnMembers(func(list []Member) { s.updateMembers(list) })
 	host.OnRelay(func(from string, payload []byte) { s.deliver(from, payload) })
+
+	useRelay := relay.Addr != ""
+	actualPort := 0
+
+	if useRelay {
+		addr, err := NormalizeAddr(relay.Addr, DefaultRelayPort)
+		if err != nil {
+			return s.Status(), err
+		}
+		if err := host.StartViaRelay(addr, relay.Token); err != nil {
+			return s.Status(), err
+		}
+		relay.Addr = addr
+	} else {
+		if port == 0 {
+			port = DefaultPort
+		}
+		var err error
+		if actualPort, err = host.Start(port); err != nil {
+			// The preferred port may be taken; fall back to any free one.
+			if actualPort, err = host.Start(0); err != nil {
+				return s.Status(), fmt.Errorf("could not open a listening port: %w", err)
+			}
+		}
+	}
 
 	s.mu.Lock()
 	s.role = RoleHost
@@ -103,10 +140,23 @@ func (s *Service) Create(netName, password string, self Member, port int) (Statu
 	s.listenPort = actualPort
 	s.members = []Member{host.self}
 	s.lastError = ""
+	if useRelay {
+		s.transport = TransportRelay
+		s.relayAddr = relay.Addr
+		// Over a relay the invite needs no address of ours: joiners point at
+		// the same relay, so only the network name travels.
+		if code, err := EncodeInvite(Invite{Name: netName, Addr: "relay:" + relay.Addr}); err == nil {
+			s.invite = code
+		}
+	} else {
+		s.transport = TransportDirect
+	}
 	s.mu.Unlock()
 
-	// Reachability work is slow and best-effort; do not hold up the UI for it.
-	go s.discoverReachability(netName, actualPort)
+	if !useRelay {
+		// Reachability work is slow and best-effort; do not hold up the UI.
+		go s.discoverReachability(netName, actualPort)
+	}
 
 	status := s.Status()
 	s.emit(status)
@@ -154,14 +204,25 @@ func (s *Service) discoverReachability(netName string, port int) {
 	s.emit(s.Status())
 }
 
-// Join connects to a network someone else is hosting.
-func (s *Service) Join(netName, password, addr string, self Member) (Status, error) {
+// Join connects to a network someone else is hosting. With a relay config the
+// host address is irrelevant — both sides meet at the relay instead.
+func (s *Service) Join(netName, password, addr string, self Member, relay RelayConfig) (Status, error) {
 	if netName == "" || password == "" {
 		return s.Status(), fmt.Errorf("network name and password are required")
 	}
-	normalized, err := NormalizeAddr(addr, DefaultPort)
-	if err != nil {
-		return s.Status(), err
+
+	useRelay := relay.Addr != ""
+	normalized := ""
+	if useRelay {
+		var err error
+		if normalized, err = NormalizeAddr(relay.Addr, DefaultRelayPort); err != nil {
+			return s.Status(), err
+		}
+	} else {
+		var err error
+		if normalized, err = NormalizeAddr(addr, DefaultPort); err != nil {
+			return s.Status(), err
+		}
 	}
 	s.Leave()
 
@@ -177,8 +238,14 @@ func (s *Service) Join(netName, password, addr string, self Member) (Status, err
 		s.emit(s.Status())
 	})
 
-	if err := client.Connect(normalized); err != nil {
-		return s.Status(), err
+	if useRelay {
+		if err := client.ConnectViaRelay(normalized, relay.Token); err != nil {
+			return s.Status(), err
+		}
+	} else {
+		if err := client.Connect(normalized); err != nil {
+			return s.Status(), err
+		}
 	}
 
 	s.mu.Lock()
@@ -186,10 +253,20 @@ func (s *Service) Join(netName, password, addr string, self Member) (Status, err
 	s.netName = netName
 	s.networkKey = DeriveNetworkKey(netName, password)
 	s.client = client
-	s.publicAddr = normalized
 	s.lastError = ""
-	if code, err := EncodeInvite(Invite{Name: netName, Addr: normalized}); err == nil {
-		s.invite = code
+	if useRelay {
+		s.transport = TransportRelay
+		s.relayAddr = normalized
+		s.publicAddr = ""
+		if code, err := EncodeInvite(Invite{Name: netName, Addr: "relay:" + normalized}); err == nil {
+			s.invite = code
+		}
+	} else {
+		s.transport = TransportDirect
+		s.publicAddr = normalized
+		if code, err := EncodeInvite(Invite{Name: netName, Addr: normalized}); err == nil {
+			s.invite = code
+		}
 	}
 	s.mu.Unlock()
 
@@ -199,12 +276,18 @@ func (s *Service) Join(netName, password, addr string, self Member) (Status, err
 }
 
 // JoinByInvite is Join with the name and address taken from an invite code.
-func (s *Service) JoinByInvite(code, password string, self Member) (Status, error) {
+// A code created on a relay carries "relay:<addr>", so the joiner is routed the
+// same way the host is without having to know which mode was used. An explicit
+// token still has to be supplied, since codes never carry secrets.
+func (s *Service) JoinByInvite(code, password, relayToken string, self Member) (Status, error) {
 	inv, err := DecodeInvite(code)
 	if err != nil {
 		return s.Status(), err
 	}
-	return s.Join(inv.Name, password, inv.Addr, self)
+	if addr, ok := strings.CutPrefix(inv.Addr, "relay:"); ok {
+		return s.Join(inv.Name, password, "", self, RelayConfig{Addr: addr, Token: relayToken})
+	}
+	return s.Join(inv.Name, password, inv.Addr, self, RelayConfig{})
 }
 
 func (s *Service) Leave() {
@@ -216,6 +299,8 @@ func (s *Service) Leave() {
 	s.networkKey = nil
 	s.members = nil
 	s.invite = ""
+	s.transport = ""
+	s.relayAddr = ""
 	s.listenPort = 0
 	s.publicAddr = ""
 	s.portMapped = false
@@ -242,6 +327,8 @@ func (s *Service) Status() Status {
 		Network:     s.netName,
 		Members:     members,
 		Invite:      s.invite,
+		Transport:   s.transport,
+		RelayAddr:   s.relayAddr,
 		ListenPort:  s.listenPort,
 		PublicAddr:  s.publicAddr,
 		PortMapped:  s.portMapped,

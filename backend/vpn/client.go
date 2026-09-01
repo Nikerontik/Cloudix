@@ -57,7 +57,21 @@ func (c *Client) Connect(addr string) error {
 	if err != nil {
 		return fmt.Errorf("connect to %s: %w", addr, err)
 	}
+	return c.handshake(conn)
+}
 
+// ConnectViaRelay reaches the host through a relay rather than dialling it
+// directly. The handshake above this point is identical, so the relay gains
+// nothing by sitting in the middle.
+func (c *Client) ConnectViaRelay(relayAddr, token string) error {
+	conn, err := DialViaRelay(relayAddr, c.networkID, token)
+	if err != nil {
+		return err
+	}
+	return c.handshake(conn)
+}
+
+func (c *Client) handshake(conn net.Conn) error {
 	reader := bufio.NewReaderSize(conn, 64*1024)
 
 	nonce, err := randomBytes(16)

@@ -57,11 +57,11 @@ export function UnblockPeer(arg1:string):Promise<void>;
 
 export function UpdateProfile(arg1:models.Profile):Promise<void>;
 
-export function VPNCreate(arg1:string,arg2:string):Promise<vpn.Status>;
+export function VPNCreate(arg1:string,arg2:string,arg3:string,arg4:string):Promise<vpn.Status>;
 
-export function VPNJoin(arg1:string,arg2:string,arg3:string):Promise<vpn.Status>;
+export function VPNJoin(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<vpn.Status>;
 
-export function VPNJoinByInvite(arg1:string,arg2:string):Promise<vpn.Status>;
+export function VPNJoinByInvite(arg1:string,arg2:string,arg3:string):Promise<vpn.Status>;
 
 export function VPNLeave():Promise<vpn.Status>;
 
