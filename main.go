@@ -15,7 +15,8 @@ import (
 var assets embed.FS
 
 func main() {
-	backendApp := app.NewApp()
+	host := &desktopHost{}
+	backendApp := app.NewApp(host)
 
 	// Windows draws a chrome that clashes with the app's own look, so we go
 	// frameless there and render our own title bar (see WindowsTitlebar in the
@@ -32,9 +33,12 @@ func main() {
 		Frameless:        frameless,
 		BackgroundColour: &options.RGBA{R: 0, G: 0, B: 0, A: 0},
 		Assets:           assets,
-		OnStartup:        backendApp.OnStartup,
-		OnBeforeClose:    backendApp.OnBeforeClose,
-		Bind:             []interface{}{backendApp},
+		// Passed by reference, not wrapped in a closure: Wails only recognises
+		// a lifecycle hook it can identify, and anything it does not recognise
+		// it exposes to the frontend as a callable binding instead.
+		OnStartup:     backendApp.OnStartup,
+		OnBeforeClose: backendApp.OnBeforeClose,
+		Bind:          []interface{}{backendApp},
 		Mac: &mac.Options{
 			WindowIsTranslucent:  true,
 			WebviewIsTransparent: true,

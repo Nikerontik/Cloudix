@@ -8,9 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
-	"os/exec"
-	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
@@ -20,8 +17,6 @@ import (
 	"cloudix/backend/storage"
 	"cloudix/backend/transport"
 	"cloudix/backend/vpn"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // appVersion is surfaced in Settings; bump it with user-visible releases.
@@ -43,9 +38,28 @@ type App struct {
 	vpnMu   sync.Mutex
 	vpnSvc  *vpn.Service
 	vpnPeer map[string]vpn.Member // overlay peers by peerID, for routing
+
+	// host is the platform behind the UI: Wails on desktop, the WebView bridge
+	// on mobile. Never nil — NewApp installs a no-op.
+	host Host
 }
 
-func NewApp() *App { return &App{} }
+// NewApp builds the core against a platform. Passing nil installs a no-op host,
+// which keeps the zero value usable in tests.
+//
+// The host arrives here rather than through a setter because every exported
+// method of *App becomes a callable Wails binding, and platform wiring has no
+// business being reachable from the UI.
+func NewApp(host Host) *App {
+	if host == nil {
+		host = nopHost{}
+	}
+	return &App{host: host}
+}
+
+func (a *App) logf(format string, args ...interface{})     { a.host.Logf("error", format, args...) }
+func (a *App) logWarnf(format string, args ...interface{}) { a.host.Logf("warn", format, args...) }
+func (a *App) logInfof(format string, args ...interface{}) { a.host.Logf("info", format, args...) }
 
 func (a *App) getProfile() *models.Profile {
 	a.profileMu.RLock()
@@ -60,10 +74,7 @@ func (a *App) setProfile(p *models.Profile) {
 }
 
 func (a *App) emitEvent(name string, payload interface{}) {
-	if a.ctx == nil {
-		return
-	}
-	runtime.EventsEmit(a.ctx, name, payload)
+	a.host.Emit(name, payload)
 }
 
 // mediaPreview builds the chat-list preview for a message. Media previews are
@@ -138,7 +149,7 @@ func (a *App) onNewPeerDiscovered(peerID string) {
 	payload, err := json.Marshal(models.AvatarRequestPayload{})
 	if err != nil {
 		if a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "marshal AvatarRequestPayload failed: %v", err)
+			a.logf("marshal AvatarRequestPayload failed: %v", err)
 		}
 		return
 	}
@@ -149,7 +160,7 @@ func (a *App) onNewPeerDiscovered(peerID string) {
 			SenderID: myProfile.PeerID,
 			Payload:  payload,
 		}); err != nil && a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "auto avatar_request to %s failed: %v", peerID, err)
+			a.logf("auto avatar_request to %s failed: %v", peerID, err)
 		}
 	}()
 
@@ -173,8 +184,8 @@ func (a *App) initNetworking() error {
 		port,
 		a.getProfile,
 		func() {
-			if a.ctx != nil && a.discovery != nil {
-				runtime.EventsEmit(a.ctx, "peers:update", a.discovery.ListPeers())
+			if a.discovery != nil {
+				a.emitEvent("peers:update", a.discovery.ListPeers())
 			}
 		},
 		a.onNewPeerDiscovered,
@@ -289,27 +300,32 @@ func (a *App) flushUndelivered() {
 
 func (a *App) OnStartup(ctx context.Context) {
 	a.ctx = ctx
+	// Wails hands out its context here and nowhere else, and the desktop host
+	// cannot emit or log without it.
+	if aware, ok := a.host.(ContextAware); ok {
+		aware.AttachContext(ctx)
+	}
 
 	store, err := storage.Open()
 	if err != nil {
-		runtime.LogErrorf(ctx, "storage.Open failed: %v", err)
+		a.logf("storage.Open failed: %v", err)
 		return
 	}
 	a.store = store
 
 	loaded, err := store.LoadProfile()
 	if err != nil {
-		runtime.LogErrorf(ctx, "LoadProfile failed: %v", err)
+		a.logf("LoadProfile failed: %v", err)
 	}
 	a.setProfile(loaded)
 
 	if err := a.initNetworking(); err != nil {
-		runtime.LogErrorf(ctx, "initNetworking failed: %v", err)
+		a.logf("initNetworking failed: %v", err)
 		return
 	}
 
 	if err := a.initOverlay(); err != nil {
-		runtime.LogErrorf(ctx, "initOverlay failed: %v", err)
+		a.logf("initOverlay failed: %v", err)
 	}
 }
 
@@ -345,7 +361,7 @@ func (a *App) initOverlay() error {
 	svc := vpn.NewService(identity)
 	svc.SetPinStore(store.PinnedKey, func(peerID, pub string) {
 		if err := store.PinKey(peerID, pub); err != nil && a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "PinKey failed: %v", err)
+			a.logf("PinKey failed: %v", err)
 		}
 	})
 	svc.OnStatus(func(st vpn.Status) {
@@ -469,7 +485,7 @@ func (a *App) OnBeforeClose(ctx context.Context) bool {
 	a.stopNetworking()
 	if a.store != nil {
 		if err := a.store.Close(); err != nil {
-			runtime.LogErrorf(ctx, "store.Close failed: %v", err)
+			a.logf("store.Close failed: %v", err)
 		}
 	}
 	return false
@@ -544,7 +560,7 @@ func (a *App) UpdateProfile(p models.Profile) error {
 			SenderID: updated.PeerID,
 			Payload:  payload,
 		}); err != nil && a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "profile_update send to %s failed: %v", peerID, err)
+			a.logf("profile_update send to %s failed: %v", peerID, err)
 		}
 	}
 
@@ -746,7 +762,7 @@ func (a *App) GetChats() []models.Chat {
 	chats, err := a.store.ListChats(profile.PeerID)
 	if err != nil {
 		if a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "ListChats failed: %v", err)
+			a.logf("ListChats failed: %v", err)
 		}
 		return []models.Chat{}
 	}
@@ -760,7 +776,7 @@ func (a *App) GetMessages(peerID string) []models.Message {
 	msgs, err := a.store.ListMessages(peerID)
 	if err != nil {
 		if a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "ListMessages failed: %v", err)
+			a.logf("ListMessages failed: %v", err)
 		}
 		return []models.Message{}
 	}
@@ -796,7 +812,7 @@ func (a *App) SendMessage(peerID, text, mediaKind, mediaData string) (*models.Me
 
 	preview := mediaPreview(text, mediaKind)
 	if err := a.store.TouchChatLastMessage(peerID, preview, msg.Timestamp); err != nil && a.ctx != nil {
-		runtime.LogErrorf(a.ctx, "TouchChatLastMessage failed: %v", err)
+		a.logf("TouchChatLastMessage failed: %v", err)
 	}
 
 	// Network send is done off the bound call: transport.Send can block on a
@@ -832,7 +848,7 @@ func (a *App) trySendMessage(msg models.Message) {
 		Payload:  payload,
 	}); err != nil {
 		if a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "Send message to peer failed: %v", err)
+			a.logf("Send message to peer failed: %v", err)
 		}
 		return
 	}
@@ -872,7 +888,7 @@ func (a *App) MarkChatRead(peerID string) error {
 		SenderID: profile.PeerID,
 		Payload:  payload,
 	}); err != nil && a.ctx != nil {
-		runtime.LogErrorf(a.ctx, "Send read_receipt failed: %v", err)
+		a.logf("Send read_receipt failed: %v", err)
 	}
 
 	return nil
@@ -983,7 +999,7 @@ func (a *App) ListBlocked() []string {
 	list, err := a.store.ListBlocked()
 	if err != nil {
 		if a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "ListBlocked failed: %v", err)
+			a.logf("ListBlocked failed: %v", err)
 		}
 		return []string{}
 	}
@@ -1072,7 +1088,7 @@ func (a *App) SendSignal(peerID, callID, kind, data string, video bool) error {
 			Payload:  payload,
 		}); err != nil {
 			if a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "Send signal (%s) to %s failed: %v", kind, peerID, err)
+				a.logf("Send signal (%s) to %s failed: %v", kind, peerID, err)
 			}
 			a.emitEvent("signal:send_error", map[string]string{
 				"peerId": peerID,
@@ -1113,7 +1129,7 @@ func (a *App) SendTyping(peerID string, isTyping bool) error {
 			SenderID: senderID,
 			Payload:  payload,
 		}); err != nil && a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "Send typing to %s failed: %v", peerID, err)
+			a.logf("Send typing to %s failed: %v", peerID, err)
 		}
 	}()
 
@@ -1183,7 +1199,7 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 	}
 	if env.SenderID == "" {
 		if a.ctx != nil {
-			runtime.LogWarningf(a.ctx, "dropping envelope with empty sender: %+v", env)
+			a.logWarnf("dropping envelope with empty sender: %+v", env)
 		}
 		return
 	}
@@ -1222,7 +1238,7 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		var p models.MessagePayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			if a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "unmarshal MessagePayload failed: %v", err)
+				a.logf("unmarshal MessagePayload failed: %v", err)
 			}
 			return
 		}
@@ -1241,14 +1257,14 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 
 		if err := a.store.InsertMessage(msg); err != nil {
 			if a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "InsertMessage (incoming) failed: %v", err)
+				a.logf("InsertMessage (incoming) failed: %v", err)
 			}
 			return
 		}
 
 		preview := mediaPreview(p.Text, p.MediaKind)
 		if err := a.store.TouchChatLastMessage(env.SenderID, preview, p.Timestamp); err != nil && a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "TouchChatLastMessage incoming failed: %v", err)
+			a.logf("TouchChatLastMessage incoming failed: %v", err)
 		}
 
 		a.emitEvent("message:incoming", msg)
@@ -1260,12 +1276,12 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		var p models.DeletePayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			if a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "unmarshal DeletePayload failed: %v", err)
+				a.logf("unmarshal DeletePayload failed: %v", err)
 			}
 			return
 		}
 		if err := a.store.SoftDeleteMessage(p.ID, true); err != nil && a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "SoftDeleteMessage incoming failed: %v", err)
+			a.logf("SoftDeleteMessage incoming failed: %v", err)
 		}
 		a.emitEvent("message:deleted", map[string]string{
 			"chatId": env.SenderID,
@@ -1276,12 +1292,12 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		var p models.ReadReceiptPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			if a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "unmarshal ReadReceiptPayload failed: %v", err)
+				a.logf("unmarshal ReadReceiptPayload failed: %v", err)
 			}
 			return
 		}
 		if err := a.store.MarkMessagesReadByIDs(p.MessageIDs); err != nil && a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "MarkMessagesReadByIDs failed: %v", err)
+			a.logf("MarkMessagesReadByIDs failed: %v", err)
 		}
 		a.emitEvent("message:read", map[string]interface{}{
 			"chatId": env.SenderID,
@@ -1292,7 +1308,7 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		var p models.TypingPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			if a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "unmarshal TypingPayload failed: %v", err)
+				a.logf("unmarshal TypingPayload failed: %v", err)
 			}
 			return
 		}
@@ -1306,12 +1322,12 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		var p models.ReactionPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			if a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "unmarshal ReactionPayload failed: %v", err)
+				a.logf("unmarshal ReactionPayload failed: %v", err)
 			}
 			return
 		}
 		if err := a.store.SetMessageReaction(p.MessageID, p.Emoji, false); err != nil && a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "SetMessageReaction incoming failed: %v", err)
+			a.logf("SetMessageReaction incoming failed: %v", err)
 		}
 		a.emitEvent("message:reacted", map[string]interface{}{
 			"chatId":       env.SenderID,
@@ -1323,12 +1339,12 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		var p models.ProfileUpdatePayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			if a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "unmarshal ProfileUpdatePayload failed: %v", err)
+				a.logf("unmarshal ProfileUpdatePayload failed: %v", err)
 			}
 			return
 		}
 		if err := a.store.UpsertChatMetaIfExists(env.SenderID, p.Name, p.Username, p.Bio, p.Avatar); err != nil && a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "UpsertChatMetaIfExists failed: %v", err)
+			a.logf("UpsertChatMetaIfExists failed: %v", err)
 		}
 		if a.discovery != nil {
 			a.discovery.UpdatePeerProfile(env.SenderID, p.Name, p.Username, p.Bio, p.Avatar)
@@ -1357,7 +1373,7 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		})
 		if err != nil {
 			if a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "marshal AvatarResponsePayload failed: %v", err)
+				a.logf("marshal AvatarResponsePayload failed: %v", err)
 			}
 			return
 		}
@@ -1371,12 +1387,12 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		var p models.AvatarResponsePayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			if a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "unmarshal AvatarResponsePayload failed: %v", err)
+				a.logf("unmarshal AvatarResponsePayload failed: %v", err)
 			}
 			return
 		}
 		if err := a.store.UpsertChatMeta(env.SenderID, p.Name, p.Username, p.Bio, p.Avatar); err != nil && a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "UpsertChatMeta failed: %v", err)
+			a.logf("UpsertChatMeta failed: %v", err)
 		}
 		if a.discovery != nil {
 			a.discovery.UpdatePeerProfile(env.SenderID, p.Name, p.Username, p.Bio, p.Avatar)
@@ -1391,7 +1407,7 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 
 	case models.EnvelopeTypeAccountDeleted:
 		if err := a.store.MarkAccountDeleted(env.SenderID); err != nil && a.ctx != nil {
-			runtime.LogErrorf(a.ctx, "MarkAccountDeleted failed: %v", err)
+			a.logf("MarkAccountDeleted failed: %v", err)
 		}
 		a.emitEvent("account:deleted", map[string]string{
 			"peerId": env.SenderID,
@@ -1401,19 +1417,19 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		var p models.SignalPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			if a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "unmarshal SignalPayload failed: %v", err)
+				a.logf("unmarshal SignalPayload failed: %v", err)
 			}
 			return
 		}
 		if p.CallID == "" {
 			if a.ctx != nil {
-				runtime.LogWarningf(a.ctx, "dropping signal with empty callID from %s", env.SenderID)
+				a.logWarnf("dropping signal with empty callID from %s", env.SenderID)
 			}
 			return
 		}
 		if !models.IsAllowedSignalKind(p.Kind) {
 			if a.ctx != nil {
-				runtime.LogWarningf(a.ctx, "dropping signal with unsupported kind %q from %s", p.Kind, env.SenderID)
+				a.logWarnf("dropping signal with unsupported kind %q from %s", p.Kind, env.SenderID)
 			}
 			return
 		}
@@ -1428,7 +1444,7 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 
 	default:
 		if a.ctx != nil {
-			runtime.LogWarningf(a.ctx, "unknown envelope type: %s", env.Type)
+			a.logWarnf("unknown envelope type: %s", env.Type)
 		}
 	}
 }
@@ -1446,9 +1462,6 @@ func mustMarshalTyping(p models.TypingPayload) string {
 // nothing on macOS; going through a native save dialog works on both platforms.
 // Returns the chosen path, or "" if the user cancelled.
 func (a *App) SaveMedia(suggestedName, dataURL string) (string, error) {
-	if a.ctx == nil {
-		return "", fmt.Errorf("app not started")
-	}
 	if dataURL == "" {
 		return "", fmt.Errorf("no data to save")
 	}
@@ -1470,21 +1483,9 @@ func (a *App) SaveMedia(suggestedName, dataURL string) (string, error) {
 		raw = []byte(payload)
 	}
 
-	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		DefaultFilename:      suggestedName,
-		CanCreateDirectories: true,
-	})
-	if err != nil {
-		return "", fmt.Errorf("save dialog: %w", err)
-	}
-	if path == "" {
-		return "", nil // cancelled
-	}
-
-	if err := os.WriteFile(path, raw, 0644); err != nil {
-		return "", fmt.Errorf("write %s: %w", path, err)
-	}
-	return path, nil
+	// Where the bytes go is the platform's business: a save dialog on desktop,
+	// a share sheet or the Downloads collection on mobile.
+	return a.host.SaveMedia(suggestedName, raw)
 }
 
 // AppVersion is shown in Settings so a user can tell at a glance which build
@@ -1498,22 +1499,7 @@ func (a *App) GetDataDir() string { return storage.DataDir() }
 func (a *App) OpenDataFolder() error {
 	dir := storage.DataDir()
 
-	var cmd *exec.Cmd
-	switch goruntime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", dir)
-	case "windows":
-		cmd = exec.Command("explorer.exe", dir)
-	default:
-		cmd = exec.Command("xdg-open", dir)
-	}
-
-	// explorer.exe exits with a non-zero status even when it succeeds.
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("open %s: %w", dir, err)
-	}
-	go func() { _ = cmd.Wait() }()
-	return nil
+	return a.host.OpenFolder(dir)
 }
 
 func (a *App) RestartNetworking() error {
@@ -1529,8 +1515,6 @@ func (a *App) RestartNetworking() error {
 	if svc := a.vpnService(); svc != nil {
 		go svc.Reconnect()
 	}
-	if a.ctx != nil {
-		runtime.LogInfof(a.ctx, "networking restarted after connectivity change")
-	}
+	a.logInfof("networking restarted after connectivity change")
 	return nil
 }

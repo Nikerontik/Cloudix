@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -17,10 +18,44 @@ type Store struct {
 	path string
 }
 
+// baseDir pins the data directory when the platform, not the OS convention,
+// decides where it lives. Mobile sets it; desktop leaves it empty.
+var (
+	baseMu  sync.RWMutex
+	baseDir string
+)
+
+// SetDataDir pins where the database lives and must be called before Open() on
+// any platform where os.UserConfigDir() is meaningless — that is, inside an iOS
+// or Android app sandbox.
+func SetDataDir(dir string) {
+	baseMu.Lock()
+	baseDir = dir
+	baseMu.Unlock()
+}
+
 // DataDir is where the profile/chat database lives. Override the app-name
-// suffix with CLOUDIX_INSTANCE to run a second instance side by side.
+// suffix with CLOUDIX_INSTANCE to run a second instance side by side. Returns
+// "" when there is no usable location, which Open() reports as an error.
 func DataDir() string {
-	dir, _ := os.UserConfigDir()
+	baseMu.RLock()
+	pinned := baseDir
+	baseMu.RUnlock()
+	if pinned != "" {
+		_ = os.MkdirAll(pinned, 0755)
+		return pinned
+	}
+
+	// FIX: the error from UserConfigDir used to be discarded, and the empty
+	// string it returns on failure made filepath.Join produce a *relative*
+	// path — so the database was silently created under the process's working
+	// directory instead of the failure being reported. Invisible on desktop,
+	// where this never fails; on mobile the cwd is a read-only bundle.
+	dir, err := os.UserConfigDir()
+	if err != nil || dir == "" {
+		return ""
+	}
+
 	appName := "Cloudix"
 	if suffix := os.Getenv("CLOUDIX_INSTANCE"); suffix != "" {
 		appName = "Cloudix-" + suffix
@@ -30,12 +65,19 @@ func DataDir() string {
 	return appDir
 }
 
-func dbPath() string {
-	return filepath.Join(DataDir(), "cloudix.db")
+func dbPath() (string, error) {
+	dir := DataDir()
+	if dir == "" {
+		return "", fmt.Errorf("no data directory: call storage.SetDataDir first")
+	}
+	return filepath.Join(dir, "cloudix.db"), nil
 }
 
 func Open() (*Store, error) {
-	path := dbPath()
+	path, err := dbPath()
+	if err != nil {
+		return nil, err
+	}
 	dsn := fmt.Sprintf(
 		"file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)",
 		path,
