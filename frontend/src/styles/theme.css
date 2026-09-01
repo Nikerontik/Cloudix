@@ -2259,3 +2259,146 @@ button {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+
+/* ------------------------------------------------------- narrow window --- */
+/* The window can be shrunk a long way; below these widths fixed sizes start
+   crowding each other, so the sidebar and the chrome give ground first. */
+
+@media (max-width: 900px) {
+  :root {
+    --sidebar-w: 250px;
+  }
+
+  .messages {
+    padding: 16px 14px;
+  }
+
+  .bubble-wrap {
+    max-width: 86%;
+  }
+
+  .settings-panel {
+    padding: 16px 16px 24px 16px;
+  }
+}
+
+@media (max-width: 760px) {
+  :root {
+    --sidebar-w: 210px;
+  }
+
+  .app-shell {
+    padding: 0 6px 6px 6px;
+  }
+
+  [data-platform="windows"] .app-shell {
+    padding: 6px;
+  }
+
+  .sidebar {
+    margin-right: 6px;
+  }
+
+  .avatar {
+    width: 36px;
+    height: 36px;
+    font-size: 14px;
+  }
+
+  .chat-header {
+    padding: 9px 12px;
+  }
+
+  /* Keep the status dot, drop its label — the badge alone is unreadable
+     pressure on the header at this width. */
+  .connection-badge {
+    font-size: 0;
+    gap: 0;
+    padding: 5px;
+  }
+
+  .connection-badge .dot {
+    width: 8px;
+    height: 8px;
+  }
+
+  .composer {
+    padding: 10px 10px;
+    gap: 6px;
+  }
+
+  .emoji-popover {
+    left: 6px;
+    width: min(280px, calc(100vw - 24px));
+  }
+
+  .settings-row {
+    flex-wrap: wrap;
+  }
+
+  .settings-row input,
+  .settings-row textarea,
+  .settings-row select {
+    max-width: none;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --sidebar-w: 180px;
+  }
+
+  .brand-title {
+    font-size: 16px;
+  }
+
+  .ping-badge {
+    display: none;
+  }
+
+  .msg-media {
+    max-width: 100%;
+  }
+
+  .call-card {
+    width: min(290px, calc(100vw - 24px));
+  }
+}
+
+/* Short windows: the sidebar list must stay the part that scrolls. */
+@media (max-height: 560px) {
+  .sidebar-brand {
+    padding-top: 8px;
+    padding-bottom: 0;
+  }
+
+  .sidebar-header {
+    padding-top: 6px;
+    padding-bottom: 8px;
+  }
+
+  .sidebar-footer,
+  .composer {
+    height: 54px;
+    min-height: 54px;
+  }
+
+  .onboarding-card {
+    padding: 16px 20px 20px 20px;
+    gap: 8px;
+  }
+
+  .onboarding-logo svg {
+    width: 84px;
+    height: 84px;
+  }
+
+  .onboarding-title {
+    font-size: 24px;
+  }
+
+  .screen-stage video {
+    max-height: none;
+  }
+}

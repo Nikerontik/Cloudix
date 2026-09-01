@@ -10,7 +10,19 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
-## Session state (2026-09-08)
+## Session state (2026-09-09)
+
+- Settings now apply **during a call**, not just to the next one. Screen quality already
+  did (`applyScreenEncoding` on `SCREEN_QUALITY_EVENT`); added the same for the microphone
+  (`MIC_DEVICE_EVENT` → `switchMicrophone`) and the share's audio source
+  (`switchScreenAudio`). Both use `sender.replaceTrack()`, which swaps the encoder input
+  with no renegotiation and no audible gap; only *adding* a share audio track where none
+  existed needs a renegotiation.
+- Window minimum dropped to 620×460 with responsive breakpoints at 900 / 760 / 640 px wide
+  and 560 px tall (sidebar narrows, chrome gives ground, connection badge collapses to its
+  dot). Any new fixed-width UI needs a breakpoint entry or it will overflow a small window.
+
+## Older session state (2026-09-08)
 
 - Screen share could show a **black square** whenever a share was stopped and restarted,
   or when the second peer started sharing while the first already was. Cause: `ontrack`

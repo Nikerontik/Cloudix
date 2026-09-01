@@ -55,7 +55,17 @@ const SCREEN_QUALITY_KEY = "cloudix:screen-quality";
 const SCREEN_QUALITY_EVENT = "cloudix:screen-quality-changed";
 const MIC_DEVICE_KEY = "cloudix:mic-device";
 
+const MIC_DEVICE_EVENT = "cloudix:mic-changed";
+
 const loadMicDevice = () => readStored(MIC_DEVICE_KEY, "");
+
+function saveMicDevice(id) {
+  try {
+    localStorage.setItem(MIC_DEVICE_KEY, id);
+  } catch {}
+  // Lets an active call swap the input without reconnecting.
+  window.dispatchEvent(new CustomEvent(MIC_DEVICE_EVENT, { detail: id }));
+}
 
 const DEFAULT_SCREEN_QUALITY = {
   height: 1080,
@@ -874,6 +884,7 @@ function CallModal({
   const screenAudioStreamRef = useRef(null);
   const screenAudioSenderRef = useRef(null);
   const sharingRef = useRef(false);
+  const micSenderRef = useRef(null);
   const screenQualityRef = useRef(loadScreenQuality());
   const screenX = useMotionValue(0);
   const screenY = useMotionValue(0);
@@ -1069,13 +1080,22 @@ function CallModal({
   // needs no renegotiation.
   useEffect(() => {
     const onQuality = (e) => {
-      screenQualityRef.current = e.detail || loadScreenQuality();
+      const next = e.detail || loadScreenQuality();
+      const prev = screenQualityRef.current;
+      screenQualityRef.current = next;
       applyScreenEncoding();
+      if (prev.audioSource !== next.audioSource) switchScreenAudio(next.audioSource);
     };
+    const onMic = (e) => switchMicrophone(e.detail ?? loadMicDevice());
+
     window.addEventListener(SCREEN_QUALITY_EVENT, onQuality);
-    return () => window.removeEventListener(SCREEN_QUALITY_EVENT, onQuality);
+    window.addEventListener(MIC_DEVICE_EVENT, onMic);
+    return () => {
+      window.removeEventListener(SCREEN_QUALITY_EVENT, onQuality);
+      window.removeEventListener(MIC_DEVICE_EVENT, onMic);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [muted]);
 
   // Real resolution / framerate / bitrate of the share, so a degraded picture is
   // visible as numbers instead of guesswork.
@@ -1428,8 +1448,52 @@ function CallModal({
       if (!existing.has(track.id)) {
         const sender = pc.addTrack(track, stream);
         if (track.kind === "video") localVideoSenderRef.current = sender;
+        if (track.kind === "audio") micSenderRef.current = sender;
       }
     });
+  };
+
+  // replaceTrack swaps the encoder input in place, so switching microphones
+  // mid-call needs no renegotiation and the peer hears no gap.
+  const switchMicrophone = async (deviceId) => {
+    const sender = micSenderRef.current;
+    if (!sender || closedRef.current) return;
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+      });
+    } catch (err) {
+      console.warn("microphone switch failed", err);
+      return;
+    }
+
+    const track = stream.getAudioTracks()[0];
+    if (!track) return;
+    // Carry the current mute state over to the new input.
+    track.enabled = !muted;
+
+    try {
+      await sender.replaceTrack(track);
+    } catch (err) {
+      console.warn("replaceTrack failed", err);
+      stream.getTracks().forEach((tr) => tr.stop());
+      return;
+    }
+
+    const old = localStreamRef.current;
+    if (old) {
+      old.getAudioTracks().forEach((tr) => {
+        try {
+          old.removeTrack(tr);
+          tr.stop();
+        } catch {}
+      });
+      old.addTrack(track);
+    } else {
+      localStreamRef.current = stream;
+    }
   };
 
   // Renegotiation is needed whenever tracks are added or removed mid-call
@@ -1620,6 +1684,65 @@ function CallModal({
       screenStreamRef.current = null;
       setSharing(false);
     }
+  };
+
+  // Changing the share's audio source mid-share: replaceTrack when a sender
+  // already exists (no renegotiation), otherwise add one and renegotiate.
+  const switchScreenAudio = async (deviceId) => {
+    if (!sharingRef.current || closedRef.current) return;
+    const pc = pcRef.current;
+    if (!pc) return;
+
+    const stopPrevious = () => {
+      try {
+        screenAudioStreamRef.current?.getTracks().forEach((tr) => tr.stop());
+      } catch {}
+      screenAudioStreamRef.current = null;
+    };
+
+    let track = null;
+    if (deviceId && deviceId !== "none") {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: { exact: deviceId },
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
+        });
+        track = stream.getAudioTracks()[0] || null;
+        if (track) {
+          stopPrevious();
+          screenAudioStreamRef.current = stream;
+        } else {
+          stream.getTracks().forEach((tr) => tr.stop());
+        }
+      } catch (err) {
+        console.warn("screen audio switch failed", err);
+        return;
+      }
+    } else {
+      stopPrevious();
+    }
+
+    const sender = screenAudioSenderRef.current;
+    if (sender) {
+      try {
+        await sender.replaceTrack(track);
+      } catch (err) {
+        console.warn("screen audio replaceTrack failed", err);
+      }
+      return;
+    }
+
+    if (!track) return;
+
+    const added = pc.addTrack(track, screenStreamRef.current || new MediaStream());
+    screenAudioSenderRef.current = added;
+    screenSendersRef.current = [...screenSendersRef.current, added];
+    await renegotiate();
+    await announceScreen();
   };
 
   const stopScreenShare = async () => {
@@ -2641,9 +2764,7 @@ function SettingsPanel({
 
   const updateMicDevice = (id) => {
     setMicDevice(id);
-    try {
-      localStorage.setItem(MIC_DEVICE_KEY, id);
-    } catch {}
+    saveMicDevice(id);
   };
 
   useEffect(() => {
