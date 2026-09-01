@@ -11,7 +11,7 @@
 // can drop traffic but cannot read or forge it.
 //
 //	go build -o cloudix-relay ./cmd/cloudix-relay
-//	./cloudix-relay -addr :47992 -token "some-shared-secret"
+//	CLOUDIX_RELAY_TOKEN=some-shared-secret ./cloudix-relay -addr :47992
 //
 // The token is optional and guards the server's bandwidth, not the
 // conversation: without it anyone who learns the address can use the relay.
@@ -28,6 +28,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
@@ -81,9 +82,15 @@ type relay struct {
 
 func main() {
 	addr := flag.String("addr", ":47992", "address to listen on")
-	token := flag.String("token", "", "shared access token clients must present (optional but recommended)")
+	token := flag.String("token", "", "shared access token clients must present; prefer CLOUDIX_RELAY_TOKEN (optional but recommended)")
 	maxRooms := flag.Int("max-rooms", 512, "maximum number of concurrently hosted networks")
 	flag.Parse()
+
+	// Prefer the environment: a token passed as a flag is visible to every user
+	// on the machine through `ps` and in `systemctl cat`.
+	if env := os.Getenv("CLOUDIX_RELAY_TOKEN"); env != "" {
+		*token = env
+	}
 
 	r := &relay{
 		token:    *token,

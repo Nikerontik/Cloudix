@@ -232,13 +232,16 @@ chmod +x /opt/cloudix/cloudix-relay
 chown -R cloudix:cloudix /opt/cloudix
 ```
 
-Придумайте ключ доступа — он не даст посторонним пользоваться вашим сервером:
+Создайте ключ доступа — он не даст посторонним пользоваться вашим сервером:
 
 ```bash
-openssl rand -base64 24
+umask 077
+echo "CLOUDIX_RELAY_TOKEN=$(openssl rand -base64 24)" > /etc/cloudix-relay.env
+chmod 600 /etc/cloudix-relay.env
+cat /etc/cloudix-relay.env
 ```
 
-Сохраните вывод, он понадобится в приложении.
+Значение после `=` понадобится в приложении. Файл читает только root.
 
 #### Шаг 3. Откройте порт
 
@@ -265,7 +268,10 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/opt/cloudix/cloudix-relay -addr :47992 -token ВАШ_КЛЮЧ
+# Ключ лежит в файле с правами 600, а не в командной строке: иначе он виден
+# в `ps aux` любому пользователю системы и в выводе `systemctl cat`.
+EnvironmentFile=/etc/cloudix-relay.env
+ExecStart=/opt/cloudix/cloudix-relay -addr :47992
 User=cloudix
 Restart=always
 RestartSec=3
