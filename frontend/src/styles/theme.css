@@ -2402,3 +2402,187 @@ button {
     max-height: none;
   }
 }
+
+
+/* ---------------------------------------------------- network (overlay) --- */
+
+.net-panel {
+  width: min(480px, calc(100vw - 32px));
+  max-height: calc(100vh - 80px);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.net-head {
+  flex-shrink: 0;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 10px 0 18px;
+  border-bottom: 1px solid var(--border);
+  position: relative;
+  z-index: 2;
+}
+
+.net-title {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+
+.net-body {
+  overflow-y: auto;
+  padding: 16px 18px 20px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+  z-index: 2;
+}
+
+.net-sub {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.net-tabs {
+  margin: 0;
+}
+
+.net-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.net-field span {
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+}
+
+.net-field input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 9px 12px;
+  background: var(--hover);
+  color: var(--text);
+  outline: none;
+  font-size: 14px;
+  transition: border-color 0.2s var(--ease-soft), background 0.2s var(--ease-soft);
+}
+
+.net-field input:focus {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.net-action {
+  margin-top: 2px;
+}
+
+.net-block {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.net-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+}
+
+.net-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.net-note {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.net-invite {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.net-invite code {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  background: var(--track);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  overflow-x: auto;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.net-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.net-live {
+  color: var(--success);
+  font-size: 12px;
+  animation: pulse-dot 1.8s ease-in-out infinite;
+}
+
+.net-network-name {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.net-role {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.net-members {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.net-member {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+}
+
+.net-member:hover {
+  background: var(--hover);
+}
+
+/* Footer button lights up while a network is joined. */
+.footer-btn.net-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}

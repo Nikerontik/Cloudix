@@ -10,7 +10,48 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
-## Session state (2026-09-09)
+## Session state (2026-09-10)
+
+- Built the **overlay network** (`backend/vpn`) — Cloudix's own answer to "use RadminVPN
+  to talk over the internet". See "Overlay network" below for the design and its limits.
+- First Go tests in the repo live in `backend/vpn/service_smoke_test.go` (real handshake,
+  membership, end-to-end relay, wrong-password rejection, invite round trip). Run with
+  `go test ./backend/vpn/`.
+
+## Overlay network (backend/vpn)
+
+**What it is not.** Not a system VPN. A real one needs a virtual adapter, meaning a signed
+kernel driver on Windows and a Network Extension entitlement on macOS, plus admin rights —
+none of which a self-signed app can ship. This carries Cloudix's own traffic only; other
+apps and games are not routed.
+
+**Shape.** One peer hosts (`Host`), others join (`Client`). The host relays between
+members. No third-party server: the host is the rendezvous point, reachable via a NAT-PMP
+port mapping when the router allows it, otherwise a manual TCP 47991 forward.
+
+**Crypto.**
+- `DeriveNetworkKey` = Argon2id(password, salt = blake2b(normalised name)), 64 MiB / t=3.
+- Only `NetworkID` — a blinded hash of that key — goes on the wire. Name and password never do.
+- **Authentication is implicit**: the network key is folded into the HKDF salt that derives
+  every link key, so a wrong password yields a different key and the first sealed frame
+  simply fails to open. There is no password check to bypass.
+- Links and member-to-member payloads use XChaCha20-Poly1305 (random 24-byte nonces, no
+  counter state to mismanage) over X25519 ECDH.
+- `E2EKey` sorts the two public keys so both sides derive the same value; the **host cannot
+  read what it relays** because it holds neither private key.
+- Identity keys are pinned trust-on-first-use in `vpn_pins`; a changed key is refused and
+  reported, which is what a host attempting interception would look like. Users can compare
+  `Fingerprint()` out of band.
+
+**Routing.** `app.deliver(peerID, env)` is now the single send path: LAN transport first,
+overlay as fallback, and overlay-only peers go straight there. Overlay members appear in
+`GetOnlinePeers()` with `ViaVPN: true`. Calls work over it because signalling rides the
+overlay while WebRTC media goes direct via STUN — no virtual adapter needed.
+
+**Gotcha.** Invite codes carry the network name and host address but **never the password**,
+so a leaked code alone grants nothing. Keep it that way.
+
+## Older session state (2026-09-09)
 
 - Settings now apply **during a call**, not just to the next one. Screen quality already
   did (`applyScreenEncoding` on `SCREEN_QUALITY_EVENT`); added the same for the microphone
@@ -216,7 +257,7 @@ go build ./...                         # backend compiles (needs frontend/dist t
 cd frontend && npm run build           # frontend only; output frontend/dist is gitignored
 ```
 
-There is no Go test suite yet. `go vet ./...` is clean.
+`go test ./backend/vpn/` covers the overlay; the rest has no tests yet. `go vet ./...` is clean.
 
 Run two local instances for P2P testing: give each a separate DB dir via
 `CLOUDIX_INSTANCE` (env, honored by `storage.dbPath` → `~/Library/Application Support/

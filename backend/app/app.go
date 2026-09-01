@@ -19,6 +19,7 @@ import (
 	"cloudix/backend/models"
 	"cloudix/backend/storage"
 	"cloudix/backend/transport"
+	"cloudix/backend/vpn"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -38,6 +39,10 @@ type App struct {
 	netMu     sync.Mutex
 	netReady  bool
 	netStopCh chan struct{}
+
+	vpnMu   sync.Mutex
+	vpnSvc  *vpn.Service
+	vpnPeer map[string]vpn.Member // overlay peers by peerID, for routing
 }
 
 func NewApp() *App { return &App{} }
@@ -249,18 +254,14 @@ func (a *App) flushUndelivered() {
 	}
 
 	for _, m := range pending {
-		// Only retry when the peer is actually reachable right now: a live
-		// discovery entry or an open connection. A stale entry would make
-		// transport.Send burn its full dial timeout per queued message.
+		// Reachable means: live on the LAN, an open TCP connection, or present
+		// in the overlay network.
+		_, overlay := a.overlayMember(m.ChatID)
 		live := false
 		if a.discovery != nil {
 			_, live = a.discovery.GetPeer(m.ChatID)
 		}
-		if !live && !transportMgr.HasConn(m.ChatID) {
-			continue
-		}
-		peer, ok := a.resolvePeer(m.ChatID)
-		if !ok {
+		if !live && !overlay && !transportMgr.HasConn(m.ChatID) {
 			continue
 		}
 		payload, err := json.Marshal(models.MessagePayload{
@@ -273,7 +274,7 @@ func (a *App) flushUndelivered() {
 		if err != nil {
 			continue
 		}
-		if err := transportMgr.Send(peer, models.WireEnvelope{
+		if err := a.deliver(m.ChatID, models.WireEnvelope{
 			Type:     models.EnvelopeTypeMessage,
 			SenderID: profile.PeerID,
 			Payload:  payload,
@@ -306,12 +307,138 @@ func (a *App) OnStartup(ctx context.Context) {
 		runtime.LogErrorf(ctx, "initNetworking failed: %v", err)
 		return
 	}
+
+	if err := a.initOverlay(); err != nil {
+		runtime.LogErrorf(ctx, "initOverlay failed: %v", err)
+	}
+}
+
+// initOverlay prepares the internet overlay ("Cloudix network"). The identity
+// keypair is generated once and reused, so peers can pin it.
+func (a *App) initOverlay() error {
+	store := a.store
+	if store == nil {
+		return fmt.Errorf("store not initialized")
+	}
+
+	seed, err := store.LoadVPNIdentity()
+	if err != nil {
+		return fmt.Errorf("load identity: %w", err)
+	}
+
+	var identity *vpn.Identity
+	if len(seed) == 32 {
+		identity, err = vpn.IdentityFromSeed(seed)
+		if err != nil {
+			return fmt.Errorf("restore identity: %w", err)
+		}
+	} else {
+		identity, err = vpn.NewIdentity()
+		if err != nil {
+			return fmt.Errorf("create identity: %w", err)
+		}
+		if err := store.SaveVPNIdentity(identity.Private[:]); err != nil {
+			return fmt.Errorf("save identity: %w", err)
+		}
+	}
+
+	svc := vpn.NewService(identity)
+	svc.SetPinStore(store.PinnedKey, func(peerID, pub string) {
+		if err := store.PinKey(peerID, pub); err != nil && a.ctx != nil {
+			runtime.LogErrorf(a.ctx, "PinKey failed: %v", err)
+		}
+	})
+	svc.OnStatus(func(st vpn.Status) {
+		a.emitEvent("vpn:status", st)
+		a.syncOverlayPeers(st)
+	})
+	svc.OnEnvelope(func(from string, payload []byte) {
+		var env models.WireEnvelope
+		if err := json.Unmarshal(payload, &env); err != nil {
+			return
+		}
+		// The relay cannot forge this: the payload was sealed with a key only
+		// the two members can derive, so the sender is who the overlay says.
+		env.SenderID = from
+		a.handleEnvelope(env)
+	})
+
+	a.vpnMu.Lock()
+	a.vpnSvc = svc
+	a.vpnPeer = make(map[string]vpn.Member)
+	a.vpnMu.Unlock()
+	return nil
+}
+
+// syncOverlayPeers keeps the routing table and the UI peer list in step with
+// the network roster.
+func (a *App) syncOverlayPeers(st vpn.Status) {
+	profile := a.getProfile()
+	selfID := ""
+	if profile != nil {
+		selfID = profile.PeerID
+	}
+
+	table := make(map[string]vpn.Member)
+	for _, m := range st.Members {
+		if m.PeerID != "" && m.PeerID != selfID {
+			table[m.PeerID] = m
+		}
+	}
+
+	a.vpnMu.Lock()
+	a.vpnPeer = table
+	a.vpnMu.Unlock()
+
+	a.emitEvent("peers:update", a.GetOnlinePeers())
+}
+
+// overlayMember reports whether a peer is reachable over the overlay.
+func (a *App) overlayMember(peerID string) (vpn.Member, bool) {
+	a.vpnMu.Lock()
+	defer a.vpnMu.Unlock()
+	m, ok := a.vpnPeer[peerID]
+	return m, ok
+}
+
+// sendOverlay seals and sends an envelope through the overlay.
+func (a *App) sendOverlay(peerID string, env models.WireEnvelope) error {
+	a.vpnMu.Lock()
+	svc := a.vpnSvc
+	a.vpnMu.Unlock()
+	if svc == nil {
+		return fmt.Errorf("overlay not initialized")
+	}
+	payload, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal envelope: %w", err)
+	}
+	return svc.SendEnvelope(peerID, payload)
+}
+
+// deliver routes an envelope over the LAN transport when the peer is on the
+// local network, and over the overlay otherwise.
+func (a *App) deliver(peerID string, env models.WireEnvelope) error {
+	if peer, ok := a.resolvePeer(peerID); ok && a.transport != nil {
+		if err := a.transport.Send(peer, env); err == nil {
+			return nil
+		} else if _, overlay := a.overlayMember(peerID); !overlay {
+			return err
+		}
+	}
+	if _, ok := a.overlayMember(peerID); ok {
+		return a.sendOverlay(peerID, env)
+	}
+	return fmt.Errorf("peer %s is not reachable", peerID)
 }
 
 func (a *App) OnBeforeClose(ctx context.Context) bool {
 	profile := a.getProfile()
 	if profile != nil && a.discovery != nil {
 		a.discovery.AnnounceGoodbye(profile)
+	}
+	if svc := a.vpnService(); svc != nil {
+		svc.Leave()
 	}
 	a.stopNetworking()
 	if a.store != nil {
@@ -373,15 +500,25 @@ func (a *App) UpdateProfile(p models.Profile) error {
 		return fmt.Errorf("marshal ProfileUpdatePayload: %w", err)
 	}
 
-	if a.discovery != nil && a.transport != nil {
+	targets := map[string]bool{}
+	if a.discovery != nil {
 		for _, peer := range a.discovery.ListPeers() {
-			if err := a.transport.Send(peer, models.WireEnvelope{
-				Type:     models.EnvelopeTypeProfileUpdate,
-				SenderID: updated.PeerID,
-				Payload:  payload,
-			}); err != nil && a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "profile_update send to %s failed: %v", peer.PeerID, err)
-			}
+			targets[peer.PeerID] = true
+		}
+	}
+	a.vpnMu.Lock()
+	for peerID := range a.vpnPeer {
+		targets[peerID] = true
+	}
+	a.vpnMu.Unlock()
+
+	for peerID := range targets {
+		if err := a.deliver(peerID, models.WireEnvelope{
+			Type:     models.EnvelopeTypeProfileUpdate,
+			SenderID: updated.PeerID,
+			Payload:  payload,
+		}); err != nil && a.ctx != nil {
+			runtime.LogErrorf(a.ctx, "profile_update send to %s failed: %v", peerID, err)
 		}
 	}
 
@@ -432,18 +569,128 @@ func (a *App) Logout() error {
 	return nil
 }
 
+// GetOnlinePeers merges peers found on the local network with members of the
+// overlay network, so both look the same to the UI.
 func (a *App) GetOnlinePeers() []models.Peer {
-	if a.discovery == nil || a.store == nil {
+	store := a.store
+	if store == nil {
 		return []models.Peer{}
 	}
-	all := a.discovery.ListPeers()
-	out := make([]models.Peer, 0, len(all))
-	for _, p := range all {
-		if !a.store.IsBlocked(p.PeerID) {
+
+	out := make([]models.Peer, 0, 8)
+	seen := make(map[string]bool)
+
+	if a.discovery != nil {
+		for _, p := range a.discovery.ListPeers() {
+			if store.IsBlocked(p.PeerID) {
+				continue
+			}
+			seen[p.PeerID] = true
 			out = append(out, p)
 		}
 	}
+
+	profile := a.getProfile()
+	a.vpnMu.Lock()
+	members := make([]vpn.Member, 0, len(a.vpnPeer))
+	for _, m := range a.vpnPeer {
+		members = append(members, m)
+	}
+	a.vpnMu.Unlock()
+
+	for _, m := range members {
+		if seen[m.PeerID] || store.IsBlocked(m.PeerID) {
+			continue
+		}
+		if profile != nil && m.PeerID == profile.PeerID {
+			continue
+		}
+		out = append(out, models.Peer{
+			PeerID:   m.PeerID,
+			Name:     m.Name,
+			Username: m.Username,
+			LastSeen: time.Now().Unix(),
+			ViaVPN:   true,
+		})
+	}
 	return out
+}
+
+// ------------------------------------------------------- overlay network ---
+
+func (a *App) vpnService() *vpn.Service {
+	a.vpnMu.Lock()
+	defer a.vpnMu.Unlock()
+	return a.vpnSvc
+}
+
+func (a *App) vpnSelf() (vpn.Member, error) {
+	profile := a.getProfile()
+	if profile == nil {
+		return vpn.Member{}, fmt.Errorf("no active profile")
+	}
+	return vpn.Member{
+		PeerID:   profile.PeerID,
+		Name:     profile.Name,
+		Username: profile.Username,
+	}, nil
+}
+
+// VPNStatus reports the current overlay state for the UI.
+func (a *App) VPNStatus() vpn.Status {
+	svc := a.vpnService()
+	if svc == nil {
+		return vpn.Status{}
+	}
+	return svc.Status()
+}
+
+// VPNCreate starts hosting a network under the given name and password.
+func (a *App) VPNCreate(name, password string) (vpn.Status, error) {
+	svc := a.vpnService()
+	if svc == nil {
+		return vpn.Status{}, fmt.Errorf("overlay not initialized")
+	}
+	self, err := a.vpnSelf()
+	if err != nil {
+		return vpn.Status{}, err
+	}
+	return svc.Create(name, password, self, vpn.DefaultPort)
+}
+
+// VPNJoin connects to a network by name, password and host address.
+func (a *App) VPNJoin(name, password, addr string) (vpn.Status, error) {
+	svc := a.vpnService()
+	if svc == nil {
+		return vpn.Status{}, fmt.Errorf("overlay not initialized")
+	}
+	self, err := a.vpnSelf()
+	if err != nil {
+		return vpn.Status{}, err
+	}
+	return svc.Join(name, password, addr, self)
+}
+
+// VPNJoinByInvite connects using an invite code plus the password.
+func (a *App) VPNJoinByInvite(code, password string) (vpn.Status, error) {
+	svc := a.vpnService()
+	if svc == nil {
+		return vpn.Status{}, fmt.Errorf("overlay not initialized")
+	}
+	self, err := a.vpnSelf()
+	if err != nil {
+		return vpn.Status{}, err
+	}
+	return svc.JoinByInvite(code, password, self)
+}
+
+func (a *App) VPNLeave() vpn.Status {
+	svc := a.vpnService()
+	if svc == nil {
+		return vpn.Status{}
+	}
+	svc.Leave()
+	return svc.Status()
 }
 
 func (a *App) GetChats() []models.Chat {
@@ -523,11 +770,6 @@ func (a *App) trySendMessage(msg models.Message) {
 		return
 	}
 
-	peer, ok := a.resolvePeer(msg.ChatID)
-	if !ok {
-		return
-	}
-
 	payload, err := json.Marshal(models.MessagePayload{
 		ID:        msg.ID,
 		Text:      msg.Text,
@@ -539,7 +781,7 @@ func (a *App) trySendMessage(msg models.Message) {
 		return
 	}
 
-	if err := transportMgr.Send(peer, models.WireEnvelope{
+	if err := a.deliver(msg.ChatID, models.WireEnvelope{
 		Type:     models.EnvelopeTypeMessage,
 		SenderID: profile.PeerID,
 		Payload:  payload,
@@ -576,20 +818,16 @@ func (a *App) MarkChatRead(peerID string) error {
 		return nil
 	}
 
-	if a.transport != nil {
-		if peer, ok := a.resolvePeer(peerID); ok {
-			payload, err := json.Marshal(models.ReadReceiptPayload{MessageIDs: ids})
-			if err != nil {
-				return fmt.Errorf("marshal ReadReceiptPayload: %w", err)
-			}
-			if err := a.transport.Send(peer, models.WireEnvelope{
-				Type:     models.EnvelopeTypeReadReceipt,
-				SenderID: profile.PeerID,
-				Payload:  payload,
-			}); err != nil && a.ctx != nil {
-				runtime.LogErrorf(a.ctx, "Send read_receipt failed: %v", err)
-			}
-		}
+	payload, err := json.Marshal(models.ReadReceiptPayload{MessageIDs: ids})
+	if err != nil {
+		return fmt.Errorf("marshal ReadReceiptPayload: %w", err)
+	}
+	if err := a.deliver(peerID, models.WireEnvelope{
+		Type:     models.EnvelopeTypeReadReceipt,
+		SenderID: profile.PeerID,
+		Payload:  payload,
+	}); err != nil && a.ctx != nil {
+		runtime.LogErrorf(a.ctx, "Send read_receipt failed: %v", err)
 	}
 
 	return nil
@@ -612,16 +850,14 @@ func (a *App) DeleteMessage(peerID, id, mode string) error {
 		return fmt.Errorf("SoftDeleteMessage: %w", err)
 	}
 
-	if forBoth && a.transport != nil {
-		if peer, ok := a.resolvePeer(peerID); ok {
-			payload, err := json.Marshal(models.DeletePayload{ID: id, Mode: mode})
-			if err == nil {
-				_ = a.transport.Send(peer, models.WireEnvelope{
-					Type:     models.EnvelopeTypeDeleteMessage,
-					SenderID: profile.PeerID,
-					Payload:  payload,
-				})
-			}
+	if forBoth {
+		payload, err := json.Marshal(models.DeletePayload{ID: id, Mode: mode})
+		if err == nil {
+			_ = a.deliver(peerID, models.WireEnvelope{
+				Type:     models.EnvelopeTypeDeleteMessage,
+				SenderID: profile.PeerID,
+				Payload:  payload,
+			})
 		}
 	}
 
@@ -657,17 +893,13 @@ func (a *App) StartChatWithPeer(peerID, name, username, bio, avatar string) erro
 		return fmt.Errorf("UpsertChatMeta: %w", err)
 	}
 
-	if a.transport != nil {
-		if peer, ok := a.resolvePeer(peerID); ok {
-			payload, err := json.Marshal(models.AvatarRequestPayload{})
-			if err == nil {
-				_ = a.transport.Send(peer, models.WireEnvelope{
-					Type:     models.EnvelopeTypeAvatarRequest,
-					SenderID: profile.PeerID,
-					Payload:  payload,
-				})
-			}
-		}
+	payload, err := json.Marshal(models.AvatarRequestPayload{})
+	if err == nil {
+		_ = a.deliver(peerID, models.WireEnvelope{
+			Type:     models.EnvelopeTypeAvatarRequest,
+			SenderID: profile.PeerID,
+			Payload:  payload,
+		})
 	}
 
 	return nil
@@ -771,9 +1003,10 @@ func (a *App) SendSignal(peerID, callID, kind, data string, video bool) error {
 		return fmt.Errorf("cannot send signal to self")
 	}
 
-	peer, ok := a.resolvePeer(peerID)
-	if !ok {
-		return fmt.Errorf("peer %s not found in local network", peerID)
+	if _, lan := a.resolvePeer(peerID); !lan {
+		if _, overlay := a.overlayMember(peerID); !overlay {
+			return fmt.Errorf("peer %s is not reachable", peerID)
+		}
 	}
 
 	payload, err := json.Marshal(models.SignalPayload{
@@ -786,10 +1019,9 @@ func (a *App) SendSignal(peerID, callID, kind, data string, video bool) error {
 		return fmt.Errorf("marshal SignalPayload: %w", err)
 	}
 
-	transportMgr := a.transport
 	senderID := profile.PeerID
 	go func() {
-		if err := transportMgr.Send(peer, models.WireEnvelope{
+		if err := a.deliver(peerID, models.WireEnvelope{
 			Type:     models.EnvelopeTypeSignal,
 			SenderID: senderID,
 			Payload:  payload,
@@ -824,20 +1056,14 @@ func (a *App) SendTyping(peerID string, isTyping bool) error {
 		return nil
 	}
 
-	peer, ok := a.resolvePeer(peerID)
-	if !ok {
-		return nil
-	}
-
 	payload, err := json.Marshal(models.TypingPayload{IsTyping: isTyping})
 	if err != nil {
 		return fmt.Errorf("marshal TypingPayload: %w", err)
 	}
 
-	transportMgr := a.transport
 	senderID := profile.PeerID
 	go func() {
-		if err := transportMgr.Send(peer, models.WireEnvelope{
+		if err := a.deliver(peerID, models.WireEnvelope{
 			Type:     models.EnvelopeTypeTyping,
 			SenderID: senderID,
 			Payload:  payload,
@@ -891,11 +1117,6 @@ func (a *App) ReactToMessage(peerID, messageID, emoji string) error {
 		return nil
 	}
 
-	peer, ok := a.resolvePeer(peerID)
-	if !ok {
-		return nil
-	}
-
 	payload, err := json.Marshal(models.ReactionPayload{
 		MessageID: messageID,
 		Emoji:     emoji,
@@ -904,7 +1125,7 @@ func (a *App) ReactToMessage(peerID, messageID, emoji string) error {
 		return fmt.Errorf("marshal ReactionPayload: %w", err)
 	}
 
-	return a.transport.Send(peer, models.WireEnvelope{
+	return a.deliver(peerID, models.WireEnvelope{
 		Type:     models.EnvelopeTypeReaction,
 		SenderID: profile.PeerID,
 		Payload:  payload,
@@ -935,14 +1156,12 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		var p models.PingPayload
 		_ = json.Unmarshal(env.Payload, &p)
 		pong, _ := json.Marshal(models.PingPayload{SentAt: p.SentAt})
-		if a.transport != nil {
-			if peer, ok := a.resolvePeer(env.SenderID); ok && profile != nil {
-				_ = a.transport.Send(peer, models.WireEnvelope{
-					Type:     models.EnvelopeTypePong,
-					SenderID: profile.PeerID,
-					Payload:  pong,
-				})
-			}
+		if profile != nil {
+			_ = a.deliver(env.SenderID, models.WireEnvelope{
+				Type:     models.EnvelopeTypePong,
+				SenderID: profile.PeerID,
+				Payload:  pong,
+			})
 		}
 
 	case models.EnvelopeTypePong:
@@ -1089,25 +1308,23 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		if myProfile == nil {
 			return
 		}
-		if peer, ok := a.resolvePeer(env.SenderID); ok {
-			payload, err := json.Marshal(models.AvatarResponsePayload{
-				Name:     myProfile.Name,
-				Username: myProfile.Username,
-				Bio:      myProfile.Bio,
-				Avatar:   myProfile.Avatar,
-			})
-			if err != nil {
-				if a.ctx != nil {
-					runtime.LogErrorf(a.ctx, "marshal AvatarResponsePayload failed: %v", err)
-				}
-				return
+		payload, err := json.Marshal(models.AvatarResponsePayload{
+			Name:     myProfile.Name,
+			Username: myProfile.Username,
+			Bio:      myProfile.Bio,
+			Avatar:   myProfile.Avatar,
+		})
+		if err != nil {
+			if a.ctx != nil {
+				runtime.LogErrorf(a.ctx, "marshal AvatarResponsePayload failed: %v", err)
 			}
-			_ = a.transport.Send(peer, models.WireEnvelope{
-				Type:     models.EnvelopeTypeAvatarResponse,
-				SenderID: myProfile.PeerID,
-				Payload:  payload,
-			})
+			return
 		}
+		_ = a.deliver(env.SenderID, models.WireEnvelope{
+			Type:     models.EnvelopeTypeAvatarResponse,
+			SenderID: myProfile.PeerID,
+			Payload:  payload,
+		})
 
 	case models.EnvelopeTypeAvatarResponse:
 		var p models.AvatarResponsePayload

@@ -106,6 +106,21 @@ CREATE TABLE IF NOT EXISTS blocklist (
 );
 
 
+-- Long-lived X25519 identity for the overlay network. One row.
+CREATE TABLE IF NOT EXISTS vpn_identity (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    seed BLOB NOT NULL
+);
+
+
+-- Trust-on-first-use pins for overlay peers' identity keys.
+CREATE TABLE IF NOT EXISTS vpn_pins (
+    peer_id TEXT PRIMARY KEY,
+    pub_key TEXT NOT NULL,
+    pinned_at INTEGER
+);
+
+
 CREATE INDEX IF NOT EXISTS idx_messages_chat_ts
     ON messages(chat_id, ts);
 
@@ -542,6 +557,61 @@ func (s *Store) MarkMessagesReadByIDs(ids []string) error {
 	}
 
 	return tx.Commit()
+}
+
+// LoadVPNIdentity returns the stored overlay identity seed, or nil if none has
+// been generated yet.
+func (s *Store) LoadVPNIdentity() ([]byte, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("db not initialized")
+	}
+	row := s.db.QueryRow(`SELECT seed FROM vpn_identity WHERE id=1`)
+	var seed []byte
+	if err := row.Scan(&seed); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return seed, nil
+}
+
+func (s *Store) SaveVPNIdentity(seed []byte) error {
+	if s.db == nil {
+		return fmt.Errorf("db not initialized")
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO vpn_identity (id, seed) VALUES (1, ?)
+         ON CONFLICT(id) DO UPDATE SET seed=excluded.seed`,
+		seed,
+	)
+	return err
+}
+
+// PinnedKey returns the identity key previously seen for a peer. A mismatch on
+// a later sighting means someone is trying to impersonate them.
+func (s *Store) PinnedKey(peerID string) (string, bool) {
+	if s.db == nil {
+		return "", false
+	}
+	row := s.db.QueryRow(`SELECT pub_key FROM vpn_pins WHERE peer_id=?`, peerID)
+	var key string
+	if err := row.Scan(&key); err != nil {
+		return "", false
+	}
+	return key, true
+}
+
+func (s *Store) PinKey(peerID, pubKey string) error {
+	if s.db == nil {
+		return fmt.Errorf("db not initialized")
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO vpn_pins (peer_id, pub_key, pinned_at) VALUES (?, ?, ?)
+         ON CONFLICT(peer_id) DO NOTHING`,
+		peerID, pubKey, time.Now().Unix(),
+	)
+	return err
 }
 
 func (s *Store) BlockPeer(peerID string) error {

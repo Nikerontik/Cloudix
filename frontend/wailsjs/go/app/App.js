@@ -109,3 +109,23 @@ export function UnblockPeer(arg1) {
 export function UpdateProfile(arg1) {
   return window['go']['app']['App']['UpdateProfile'](arg1);
 }
+
+export function VPNCreate(arg1, arg2) {
+  return window['go']['app']['App']['VPNCreate'](arg1, arg2);
+}
+
+export function VPNJoin(arg1, arg2, arg3) {
+  return window['go']['app']['App']['VPNJoin'](arg1, arg2, arg3);
+}
+
+export function VPNJoinByInvite(arg1, arg2) {
+  return window['go']['app']['App']['VPNJoinByInvite'](arg1, arg2);
+}
+
+export function VPNLeave() {
+  return window['go']['app']['App']['VPNLeave']();
+}
+
+export function VPNStatus() {
+  return window['go']['app']['App']['VPNStatus']();
+}

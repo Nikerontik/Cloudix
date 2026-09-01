@@ -528,6 +528,8 @@ function Sidebar({
   theme,
   setTheme,
   onRescan,
+  onOpenNetwork,
+  netActive,
 }) {
   // FIX: убраны вкладки "groups"/"channels" по запросу — они никогда не были
   // реализованы и только занимали место. "saved" тоже убрана как отдельная
@@ -607,7 +609,7 @@ function Sidebar({
               <div className="chat-meta">
                 <div className="chat-title">{p.name}</div>
                 <div className="chat-preview">
-                  {p.username} · {t.foundInNetwork}
+                  {p.username} · {p.viaVpn ? t.viaVpn : t.foundInNetwork}
                 </div>
               </div>
             </motion.div>
@@ -680,6 +682,23 @@ function Sidebar({
         </button>
         <button
           type="button"
+          className={"footer-btn icon-only " + (netActive ? "net-on" : "")}
+          title={t.net.button}
+          aria-label={t.net.button}
+          onClick={onOpenNetwork}
+        >
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M1.5 8h13" stroke="currentColor" strokeWidth="1.4" />
+            <path
+              d="M8 1.5c1.8 1.9 2.8 4.1 2.8 6.5S9.8 12.6 8 14.5C6.2 12.6 5.2 10.4 5.2 8S6.2 3.4 8 1.5Z"
+              stroke="currentColor"
+              strokeWidth="1.4"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
           className="footer-btn icon-only"
           title={t.githubBtn}
           aria-label={t.githubBtn}
@@ -691,6 +710,297 @@ function Sidebar({
         </button>
       </div>
     </div>
+  );
+}
+
+// The overlay network panel: create a network or join one by invite. Opened
+// from the sidebar footer, next to Settings and GitHub.
+function NetworkPanel({ status, t, onClose, onRefresh }) {
+  const [tab, setTab] = useState(status?.active ? "status" : "create");
+  const [mode, setMode] = useState("invite");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [invite, setInvite] = useState("");
+  const [addr, setAddr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [copied, setCopied] = useState("");
+
+  useEffect(() => {
+    if (status?.active) setTab("status");
+  }, [status?.active]);
+
+  const run = async (fn) => {
+    setBusy(true);
+    setError("");
+    try {
+      await fn();
+      await onRefresh();
+    } catch (err) {
+      setError(String(err?.message || err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = (value, key) => {
+    navigator.clipboard?.writeText(value).then(
+      () => {
+        setCopied(key);
+        setTimeout(() => setCopied(""), 1600);
+      },
+      () => {}
+    );
+  };
+
+  const active = !!status?.active;
+  const members = status?.members || [];
+
+  return (
+    <motion.div
+      className="profile-overlay"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onClick={onClose}
+      style={{ justifyContent: "center", alignItems: "center" }}
+    >
+      <motion.div
+        className="net-panel glass-strong"
+        initial={{ opacity: 0, y: 16, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 10, scale: 0.97 }}
+        transition={{ type: "spring", stiffness: 300, damping: 28 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="net-head">
+          <div className="net-title">{t.net.title}</div>
+          <button type="button" className="screen-btn" onClick={onClose} aria-label={t.mediaViewer.close}>
+            ✕
+          </button>
+        </div>
+
+        <div className="net-body">
+          {!active && (
+            <>
+              <p className="net-sub">{t.net.subtitle}</p>
+
+              <div className="sidebar-tabs net-tabs">
+                <button
+                  type="button"
+                  className={"tab-btn " + (tab === "create" ? "active" : "")}
+                  onClick={() => setTab("create")}
+                >
+                  {t.net.tabCreate}
+                </button>
+                <button
+                  type="button"
+                  className={"tab-btn " + (tab === "join" ? "active" : "")}
+                  onClick={() => setTab("join")}
+                >
+                  {t.net.tabJoin}
+                </button>
+              </div>
+
+              <label className="net-field">
+                <span>{t.net.password}</span>
+                <input
+                  type="password"
+                  value={password}
+                  placeholder={t.net.passwordPlaceholder}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </label>
+
+              {tab === "create" ? (
+                <>
+                  <label className="net-field">
+                    <span>{t.net.name}</span>
+                    <input
+                      type="text"
+                      value={name}
+                      placeholder={t.net.namePlaceholder}
+                      onChange={(e) => setName(e.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="onboarding-btn net-action"
+                    disabled={busy || !name.trim() || password.length < 8}
+                    onClick={() => run(() => WailsApp.VPNCreate(name.trim(), password))}
+                  >
+                    {busy ? t.net.creating : t.net.create}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="sidebar-tabs net-tabs">
+                    <button
+                      type="button"
+                      className={"tab-btn " + (mode === "invite" ? "active" : "")}
+                      onClick={() => setMode("invite")}
+                    >
+                      {t.net.byInvite}
+                    </button>
+                    <button
+                      type="button"
+                      className={"tab-btn " + (mode === "manual" ? "active" : "")}
+                      onClick={() => setMode("manual")}
+                    >
+                      {t.net.byAddress}
+                    </button>
+                  </div>
+
+                  {mode === "invite" ? (
+                    <label className="net-field">
+                      <span>{t.net.invite}</span>
+                      <input
+                        type="text"
+                        value={invite}
+                        placeholder={t.net.invitePlaceholder}
+                        onChange={(e) => setInvite(e.target.value)}
+                      />
+                    </label>
+                  ) : (
+                    <>
+                      <label className="net-field">
+                        <span>{t.net.name}</span>
+                        <input
+                          type="text"
+                          value={name}
+                          placeholder={t.net.namePlaceholder}
+                          onChange={(e) => setName(e.target.value)}
+                        />
+                      </label>
+                      <label className="net-field">
+                        <span>{t.net.address}</span>
+                        <input
+                          type="text"
+                          value={addr}
+                          placeholder={t.net.addressPlaceholder}
+                          onChange={(e) => setAddr(e.target.value)}
+                        />
+                      </label>
+                    </>
+                  )}
+
+                  <button
+                    type="button"
+                    className="onboarding-btn net-action"
+                    disabled={
+                      busy ||
+                      !password ||
+                      (mode === "invite" ? !invite.trim() : !name.trim() || !addr.trim())
+                    }
+                    onClick={() =>
+                      run(() =>
+                        mode === "invite"
+                          ? WailsApp.VPNJoinByInvite(invite.trim(), password)
+                          : WailsApp.VPNJoin(name.trim(), password, addr.trim())
+                      )
+                    }
+                  >
+                    {busy ? t.net.joining : t.net.join}
+                  </button>
+                </>
+              )}
+            </>
+          )}
+
+          {active && (
+            <>
+              <div className="net-status-row">
+                <span className="net-live">●</span>
+                <div>
+                  <div className="net-network-name">{status.network}</div>
+                  <div className="net-role">
+                    {status.role === "host" ? t.net.roleHost : t.net.roleMember}
+                  </div>
+                </div>
+              </div>
+
+              {status.role === "host" && (
+                <div className="net-block">
+                  {status.invite ? (
+                    <>
+                      <div className="net-label">{t.net.invite}</div>
+                      <div className="net-invite">
+                        <code>{status.invite}</code>
+                        <button
+                          type="button"
+                          className="theme-toggle"
+                          onClick={() => copy(status.invite, "invite")}
+                        >
+                          {copied === "invite" ? t.net.copied : t.net.copy}
+                        </button>
+                      </div>
+                      <div className="net-hint">{t.net.shareHint}</div>
+                      <div className="net-hint">
+                        {status.portMapped ? t.net.portMapped : t.net.portManual}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="net-hint">
+                      {status.publicAddr ? t.net.noAddr : t.net.waitingAddr}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="net-block">
+                <div className="net-label">
+                  {t.net.members} · {members.length}
+                </div>
+                <div className="net-members">
+                  {members.map((m) => (
+                    <div key={m.peerId} className="net-member">
+                      <Avatar name={m.name || m.peerId} avatar="" online />
+                      <div className="chat-meta">
+                        <div className="chat-title">{m.name || m.peerId}</div>
+                        <div className="chat-preview">
+                          {m.isHost ? t.net.host : m.username || m.peerId}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="theme-toggle danger net-action"
+                disabled={busy}
+                onClick={() => run(() => WailsApp.VPNLeave())}
+              >
+                {t.net.leave}
+              </button>
+            </>
+          )}
+
+          {(error || status?.error) && (
+            <div className="onboarding-error">{error || status.error}</div>
+          )}
+
+          <div className="net-block">
+            <div className="net-label">{t.net.fingerprint}</div>
+            <div className="net-invite">
+              <code>{status?.fingerprint || "…"}</code>
+              <button
+                type="button"
+                className="theme-toggle"
+                onClick={() => copy(status?.fingerprint || "", "fp")}
+              >
+                {copied === "fp" ? t.net.copied : t.net.copy}
+              </button>
+            </div>
+            <div className="net-hint">{t.net.fingerprintHint}</div>
+          </div>
+
+          <div className="net-hint net-note">🔒 {t.net.security}</div>
+          <div className="net-hint net-note">ℹ️ {t.net.notLan}</div>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -3223,6 +3533,8 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [activeChat, setActiveChat] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showNetwork, setShowNetwork] = useState(false);
+  const [vpnStatus, setVpnStatus] = useState(null);
   const [connStatus, setConnStatus] = useState("connecting");
   const [onlinePeersRaw, setOnlinePeersRaw] = useState([]);
   const [profileTarget, setProfileTarget] = useState(null);
@@ -3318,6 +3630,14 @@ export default function App() {
     }
   }, []);
 
+  const refreshVpnStatus = useCallback(async () => {
+    try {
+      setVpnStatus(await WailsApp.VPNStatus());
+    } catch (err) {
+      console.error("VPNStatus failed:", err);
+    }
+  }, []);
+
   const loadMessages = useCallback(async (peerId) => {
     if (peerId === SAVED_CHAT_ID) return;
     try {
@@ -3352,6 +3672,7 @@ export default function App() {
 
     refreshOnlinePeers();
     refreshChats();
+    refreshVpnStatus();
 
     const t1 = setTimeout(() => {
       refreshOnlinePeers();
@@ -3377,7 +3698,7 @@ export default function App() {
       clearTimeout(t3);
       clearInterval(pingInterval);
     };
-  }, [profile?.peerId, refreshChats, refreshOnlinePeers]);
+  }, [profile?.peerId, refreshChats, refreshOnlinePeers, refreshVpnStatus]);
 
   useEffect(() => {
     if (!profile) return;
@@ -3449,6 +3770,11 @@ export default function App() {
     const cancelPing = EventsOn("ping:result", ({ peerId, ms } = {}) => {
       if (!peerId) return;
       setPingByPeer((prev) => ({ ...prev, [peerId]: ms }));
+    });
+
+    const cancelVpn = EventsOn("vpn:status", (st) => {
+      setVpnStatus(st || null);
+      refreshOnlinePeers();
     });
 
     const cancelProfileUpdated = EventsOn("profile:updated", () => refreshChats());
@@ -3566,6 +3892,7 @@ export default function App() {
       cancelRead?.();
       cancelReacted?.();
       cancelPing?.();
+      cancelVpn?.();
       cancelProfileUpdated?.();
       cancelAccountDeleted?.();
       cancelSignal?.();
@@ -3819,6 +4146,8 @@ export default function App() {
     setOnlinePeersRaw([]);
     setActiveChat(null);
     setShowSettings(false);
+    setShowNetwork(false);
+    setVpnStatus(null);
     setProfileTarget(null);
     setMediaChatId(null);
     setCallState(null);
@@ -3917,6 +4246,8 @@ export default function App() {
           theme={theme}
           setTheme={setTheme}
           onRescan={rescanPeers}
+          onOpenNetwork={() => setShowNetwork(true)}
+          netActive={!!vpnStatus?.active}
         />
 
         {showSettings ? (
@@ -3987,6 +4318,18 @@ export default function App() {
             onClose={() => setMediaChatId(null)}
             onOpenMedia={(m) => setViewerItem(m)}
             t={t}
+          />
+        )}
+
+        {showNetwork && (
+          <NetworkPanel
+            status={vpnStatus}
+            t={t}
+            onClose={() => setShowNetwork(false)}
+            onRefresh={async () => {
+              await refreshVpnStatus();
+              await refreshOnlinePeers();
+            }}
           />
         )}
 

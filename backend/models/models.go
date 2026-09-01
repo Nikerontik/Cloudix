@@ -59,6 +59,9 @@ type Peer struct {
 	IP       string `json:"ip"`
 	Port     int    `json:"port"`
 	LastSeen int64  `json:"lastSeen"`
+	// ViaVPN marks a peer reached through the overlay network rather than the
+	// local network, so the UI can label it.
+	ViaVPN bool `json:"viaVpn,omitempty"`
 }
 
 type Message struct {
