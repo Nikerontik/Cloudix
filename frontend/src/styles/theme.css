@@ -517,6 +517,13 @@ button {
   justify-content: center;
 }
 
+/* Unread count sits on the "All" tab; the accent fill of an active tab would
+   swallow a plain badge, so it keeps its own colour. */
+.tab-count.unread {
+  background: var(--danger);
+  color: #fff;
+}
+
 .chat-list {
   flex: 1;
   overflow-y: auto;
@@ -667,6 +674,23 @@ button {
 
 .footer-btn:active {
   transform: scale(0.97);
+}
+
+.footer-btn-label {
+  margin-left: 6px;
+}
+
+/* Three icon buttons plus a label do not fit a narrowed sidebar; the label is
+   the part that can go, the tooltip keeps the meaning. */
+@media (max-width: 900px) {
+  .footer-btn-label {
+    display: none;
+  }
+
+  .sidebar-footer {
+    gap: 6px;
+    padding: 0 8px;
+  }
 }
 
 .footer-btn.icon-only {
@@ -2432,6 +2456,38 @@ button {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.docs-panel {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.docs-body {
+  gap: 0;
+}
+
+.docs-section {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.docs-section:last-child {
+  border-bottom: none;
+}
+
+.docs-section h3 {
+  margin: 0 0 5px 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.docs-section p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  user-select: text;
 }
 
 .net-head {

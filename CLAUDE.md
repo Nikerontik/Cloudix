@@ -10,7 +10,28 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
-## Session state (2026-09-12) — branch `relay-server`
+## Session state (2026-09-13) — branch `relay-server`
+
+Calls work directly across different networks — TURN turned out to be unnecessary for
+that case. **Note for future debugging: app windows launched from the agent's Bash tool
+inherit its restricted network (UDP replies do not come back), which suppresses srflx
+candidates and made the Mac look broken. Have the user launch the app themselves.**
+
+Fixed this pass:
+- **Chats invisible over the relay.** `handleEnvelope` only created the chat row when
+  `discovery` knew the sender, which it never does over the overlay, so
+  `TouchChatLastMessage` updated nothing. `ensureChatMeta` now falls back to the overlay
+  roster and finally to a placeholder row.
+- **Reconnect after network changes.** `Service` remembers how the session was entered
+  (`sessionParams`) and `Reconnect()` rebuilds it; `RestartNetworking` calls it, and a
+  client that drops unexpectedly retries with backoff. `Leave`/`Dropped` clear the memory
+  so a retry cannot resurrect a session the user ended.
+- **"Room already hosted" after leaving.** `RelayListener.Close` now sends an explicit
+  `bye` so the relay frees the room at once instead of waiting for the idle timeout.
+- **Logout left the overlay running** under a peer id that no longer existed.
+- Unread badge on the "All" tab; docs panel in the sidebar footer.
+
+## Older session state (2026-09-12) — branch `relay-server`
 
 Relay is deployed and working (messages, reactions). Fixed and added this pass:
 

@@ -200,6 +200,20 @@ func (s *Store) UpsertChatMeta(peerID, name, username, bio, avatar string) error
 	return err
 }
 
+// UpsertChatMetaIfMissing creates a placeholder chat so an incoming message has
+// a row to attach to, without overwriting a name already known.
+func (s *Store) UpsertChatMetaIfMissing(peerID string) error {
+	if s.db == nil {
+		return fmt.Errorf("db not initialized")
+	}
+	_, err := s.db.Exec(`
+        INSERT INTO chats (peer_id,name,username,bio,avatar,last_message,last_timestamp,account_deleted)
+        VALUES (?,?,'','','','',0,0)
+        ON CONFLICT(peer_id) DO NOTHING
+    `, peerID, peerID)
+	return err
+}
+
 func (s *Store) UpsertChatMetaIfExists(peerID, name, username, bio, avatar string) error {
 	if s.db == nil {
 		return fmt.Errorf("db not initialized")

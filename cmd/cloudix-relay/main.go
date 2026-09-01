@@ -39,6 +39,7 @@ const (
 	msgAccept  = "accept"
 	msgSession = "session"
 	msgPing    = "ping"
+	msgBye     = "bye"
 	msgOK      = "ok"
 	msgError   = "error"
 
@@ -192,6 +193,11 @@ func (r *relay) serveHost(conn net.Conn, roomID string) {
 		_ = conn.SetReadDeadline(time.Now().Add(controlIdleTimeout))
 		msg, err := readMsg(reader)
 		if err != nil {
+			break
+		}
+		if msg.Type == msgBye {
+			// Explicit release: the host is leaving cleanly, so the room must
+			// be free immediately rather than after the idle timeout.
 			break
 		}
 		if msg.Type == msgPing {

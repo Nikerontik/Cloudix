@@ -34,6 +34,7 @@ const (
 	relayAccept = "accept"  // host -> relay: here is the other end of session sid
 	relaySess   = "session" // relay -> host: a joiner is waiting
 	relayPing   = "ping"    // host -> relay: the room is still wanted
+	relayBye    = "bye"     // host -> relay: release the room now
 	relayOK     = "ok"
 	relayErr    = "error"
 
@@ -277,11 +278,17 @@ func (l *RelayListener) Accept() (net.Conn, error) {
 func (l *RelayListener) Close() error {
 	l.stopOnce.Do(func() { close(l.stopCh) })
 	l.mu.Lock()
-	if l.control != nil {
-		_ = l.control.Close()
-		l.control = nil
-	}
+	conn := l.control
+	l.control = nil
 	l.mu.Unlock()
+
+	if conn != nil {
+		// Tell the relay to release the room immediately. Without this it waits
+		// for the idle timeout, and re-creating the same network right after
+		// leaving fails with "room already hosted".
+		_ = writeRelayMsg(conn, relayMsg{Type: relayBye})
+		_ = conn.Close()
+	}
 	return nil
 }
 

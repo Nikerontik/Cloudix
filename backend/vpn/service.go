@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // DefaultPort is the port a host listens on unless told otherwise.
@@ -57,6 +58,11 @@ type Service struct {
 	portMapped bool
 	lastError  string
 
+	// Everything needed to stand the session back up after the network under
+	// it changes — Wi-Fi switch, VPN toggle, laptop waking up.
+	session      *sessionParams
+	reconnecting bool
+
 	onStatus   func(Status)
 	onEnvelope func(peerID string, payload []byte)
 	// Pinned identity keys, trust-on-first-use. A host that later tries to
@@ -65,8 +71,124 @@ type Service struct {
 	pin    func(peerID, pubKey string)
 }
 
+// sessionParams remembers how the current network was entered so it can be
+// re-entered automatically.
+type sessionParams struct {
+	host     bool
+	name     string
+	password string
+	addr     string
+	port     int
+	self     Member
+	relay    RelayConfig
+}
+
 func NewService(identity *Identity) *Service {
 	return &Service{identity: identity, role: RoleNone}
+}
+
+// Reconnect tears the session down and stands it up again from scratch. Called
+// when the machine's networking changed underneath us, where sockets are
+// usually alive but useless.
+func (s *Service) Reconnect() {
+	s.mu.RLock()
+	params := s.session
+	s.mu.RUnlock()
+	if params == nil {
+		return
+	}
+	s.teardown("reconnecting…")
+
+	if params.host {
+		if _, err := s.Create(params.name, params.password, params.self, params.port, params.relay); err != nil {
+			s.setError(fmt.Sprintf("could not restore the network: %v", err))
+			s.mu.Lock()
+			s.session = params
+			s.mu.Unlock()
+			s.scheduleRetry(params)
+		}
+		return
+	}
+	if _, err := s.Join(params.name, params.password, params.addr, params.self, params.relay); err != nil {
+		s.setError(fmt.Sprintf("could not rejoin: %v", err))
+		s.mu.Lock()
+		s.session = params
+		s.mu.Unlock()
+		s.scheduleRetry(params)
+	}
+}
+
+// scheduleRetry keeps trying to restore a session in the background, backing
+// off so a long outage does not hammer the relay.
+func (s *Service) scheduleRetry(params *sessionParams) {
+	s.mu.Lock()
+	if s.reconnecting || s.session != params {
+		s.mu.Unlock()
+		return
+	}
+	s.reconnecting = true
+	s.mu.Unlock()
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.reconnecting = false
+			s.mu.Unlock()
+		}()
+
+		delay := 2 * time.Second
+		for attempt := 0; attempt < 40; attempt++ {
+			time.Sleep(delay)
+
+			s.mu.RLock()
+			current := s.session
+			active := s.role != RoleNone
+			s.mu.RUnlock()
+			// The user left, or joined something else, or we are already back.
+			if current != params || active {
+				return
+			}
+
+			var err error
+			if params.host {
+				_, err = s.Create(params.name, params.password, params.self, params.port, params.relay)
+			} else {
+				_, err = s.Join(params.name, params.password, params.addr, params.self, params.relay)
+			}
+			if err == nil {
+				return
+			}
+			if delay < 30*time.Second {
+				delay *= 2
+			}
+		}
+	}()
+}
+
+func (s *Service) setError(msg string) {
+	s.mu.Lock()
+	s.lastError = msg
+	s.mu.Unlock()
+	s.emit(s.Status())
+}
+
+// teardown stops whatever is running without forgetting how to restore it.
+func (s *Service) teardown(reason string) {
+	s.mu.Lock()
+	host, client := s.host, s.client
+	s.host, s.client = nil, nil
+	s.role = RoleNone
+	s.members = nil
+	s.lastError = reason
+	s.mu.Unlock()
+
+	if host != nil {
+		host.Stop()
+	}
+	if client != nil {
+		client.Close()
+	}
+	s.emit(s.Status())
 }
 
 func (s *Service) OnStatus(fn func(Status))           { s.onStatus = fn }
@@ -133,6 +255,10 @@ func (s *Service) Create(netName, password string, self Member, port int, relay 
 	}
 
 	s.mu.Lock()
+	s.session = &sessionParams{
+		host: true, name: netName, password: password,
+		port: port, self: self, relay: relay,
+	}
 	s.role = RoleHost
 	s.netName = netName
 	s.networkKey = DeriveNetworkKey(netName, password)
@@ -232,8 +358,9 @@ func (s *Service) Join(netName, password, addr string, self Member, relay RelayC
 	client.OnClosed(func(err error) {
 		s.mu.Lock()
 		stale := s.client == client
+		var params *sessionParams
 		if stale {
-			s.lastError = "disconnected from the network host"
+			s.lastError = "connection to the network lost — reconnecting…"
 			// Clearing the roster matters: without it everyone the network
 			// contained keeps showing as online after the host dissolves it,
 			// and messages queue up against peers that are no longer there.
@@ -244,10 +371,14 @@ func (s *Service) Join(netName, password, addr string, self Member, relay RelayC
 			s.invite = ""
 			s.transport = ""
 			s.client = nil
+			params = s.session
 		}
 		s.mu.Unlock()
 		if stale {
 			s.emit(s.Status())
+			if params != nil {
+				s.scheduleRetry(params)
+			}
 		}
 	})
 
@@ -262,6 +393,10 @@ func (s *Service) Join(netName, password, addr string, self Member, relay RelayC
 	}
 
 	s.mu.Lock()
+	s.session = &sessionParams{
+		host: false, name: netName, password: password,
+		addr: addr, self: self, relay: relay,
+	}
 	s.role = RoleMember
 	s.netName = netName
 	s.networkKey = DeriveNetworkKey(netName, password)
@@ -313,6 +448,7 @@ func (s *Service) Dropped(reason string) {
 	}
 	host, client := s.host, s.client
 	s.host, s.client = nil, nil
+	s.session = nil
 	s.role = RoleNone
 	s.netName = ""
 	s.networkKey = nil
@@ -339,6 +475,8 @@ func (s *Service) Leave() {
 	s.mu.Lock()
 	host, client := s.host, s.client
 	s.host, s.client = nil, nil
+	// Forgetting the session stops any pending retry from bringing it back.
+	s.session = nil
 	s.role = RoleNone
 	s.netName = ""
 	s.networkKey = nil

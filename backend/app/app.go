@@ -393,6 +393,32 @@ func (a *App) syncOverlayPeers(st vpn.Status) {
 	a.emitEvent("peers:update", a.GetOnlinePeers())
 }
 
+// ensureChatMeta guarantees a chat row exists for a peer before anything is
+// written against it. Discovery only knows peers on the local network, so over
+// the overlay this used to find nothing: the row was never created,
+// TouchChatLastMessage updated zero rows, and the conversation stayed invisible
+// until the user opened it from the "Online" tab by hand.
+func (a *App) ensureChatMeta(peerID string) {
+	store := a.store
+	if store == nil || peerID == "" {
+		return
+	}
+
+	if a.discovery != nil {
+		if peer, ok := a.discovery.GetPeerEvenIfStale(peerID); ok && peer.Name != "" {
+			_ = store.UpsertChatMeta(peerID, peer.Name, peer.Username, peer.Bio, peer.Avatar)
+			return
+		}
+	}
+	if m, ok := a.overlayMember(peerID); ok {
+		_ = store.UpsertChatMeta(peerID, m.Name, m.Username, "", "")
+		return
+	}
+	// Nothing known about them yet — still create the row so the message has
+	// somewhere to land; the name arrives with the next profile exchange.
+	_ = store.UpsertChatMetaIfMissing(peerID)
+}
+
 // overlayMember reports whether a peer is reachable over the overlay.
 func (a *App) overlayMember(peerID string) (vpn.Member, bool) {
 	a.vpnMu.Lock()
@@ -545,6 +571,14 @@ func (a *App) Logout() error {
 		}
 		a.discovery.AnnounceGoodbye(profile)
 	}
+
+	// The overlay carries this profile's peer id, so it cannot outlive it.
+	if svc := a.vpnService(); svc != nil {
+		svc.Leave()
+	}
+	a.vpnMu.Lock()
+	a.vpnPeer = make(map[string]vpn.Member)
+	a.vpnMu.Unlock()
 
 	a.stopNetworking()
 	if oldStore != nil {
@@ -1203,11 +1237,7 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 			Timestamp: p.Timestamp,
 		}
 
-		if a.discovery != nil {
-			if peer, ok := a.discovery.GetPeerEvenIfStale(env.SenderID); ok {
-				_ = a.store.UpsertChatMeta(env.SenderID, peer.Name, peer.Username, peer.Bio, peer.Avatar)
-			}
-		}
+		a.ensureChatMeta(env.SenderID)
 
 		if err := a.store.InsertMessage(msg); err != nil {
 			if a.ctx != nil {
@@ -1492,6 +1522,12 @@ func (a *App) RestartNetworking() error {
 	}
 	if err := a.discovery.Restart(); err != nil {
 		return fmt.Errorf("discovery.Restart: %w", err)
+	}
+	// Sockets usually survive a Wi-Fi switch or a VPN toggle while being
+	// useless afterwards, so the overlay is rebuilt from scratch rather than
+	// trusted to notice on its own.
+	if svc := a.vpnService(); svc != nil {
+		go svc.Reconnect()
 	}
 	if a.ctx != nil {
 		runtime.LogInfof(a.ctx, "networking restarted after connectivity change")

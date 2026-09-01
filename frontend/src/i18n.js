@@ -111,6 +111,69 @@ const dict = {
       notLan: "Это оверлей для трафика Cloudix, а не системный VPN: другие программы и игры через него не пойдут.",
       errNoProfile: "Сначала создайте профиль.",
     },
+    docs: {
+      button: "Как это работает",
+      title: "Как устроен Cloudix",
+      close: "Закрыть",
+      sections: [
+        {
+          h: "Главная идея",
+          p: "Обычный мессенджер отправляет сообщение на сервер компании, а тот пересылает его собеседнику. Cloudix так не делает: сообщения идут напрямую между вашими устройствами. Нет аккаунтов, нет регистрации, нет базы данных на чужой стороне — профиль и переписка лежат только у вас, в файле SQLite на диске.",
+        },
+        {
+          h: "Как вас находят",
+          p: "В локальной сети приложение раз в две секунды рассылает по Wi-Fi короткий пакет «я здесь, зовут так-то» (UDP multicast на 239.255.42.99:47990) и слушает такие же от других. Никакой настройки не нужно — устройства видят друг друга сами. Если пир пропал больше чем на 8 секунд, он исчезает из списка.",
+        },
+        {
+          h: "Как идут сообщения",
+          p: "Между устройствами открывается обычное TCP-соединение, по которому летят строки JSON. Сообщение, отправленное офлайн-собеседнику, сохраняется с пометкой «не доставлено» и уходит само, когда он появится в сети. Фото и видео едут тем же каналом, встроенные прямо в сообщение.",
+        },
+        {
+          h: "Звонки и демонстрация экрана",
+          p: "Здесь работает WebRTC — та же технология, что в Google Meet и Discord. Через обычный канал Cloudix стороны обмениваются техническими описаниями (это называется сигналинг), после чего звук и видео идут напрямую, минуя всё остальное. Медиапоток всегда зашифрован — это встроено в сам WebRTC (DTLS-SRTP), отключить нельзя.",
+        },
+        {
+          h: "Почему звонок иногда не соединяется",
+          p: "Домашние роутеры не пропускают входящие соединения — это называется NAT. Обычно устройства обходят его через STUN-сервер, который подсказывает каждому его внешний адрес. Но если провайдер прячет за общим адресом обе стороны (CGNAT), прямого пути нет вовсе, и поток должен пересылать TURN-сервер. Его адрес указывается в настройках.",
+        },
+        {
+          h: "Сеть Cloudix: общение через интернет",
+          p: "Если устройства в разных сетях, друг друга они не найдут. Тогда один участник создаёт сеть по названию и паролю, а остальные подключаются. Если у создателя есть белый IP — соединение прямое. Если нет — оба подключаются к серверу-посреднику, который вы поднимаете сами и адрес которого вводите в приложении. В код никакой сервер не зашит.",
+        },
+        {
+          h: "Как защищён пароль сети",
+          p: "Пароль не передаётся никуда — ни открыто, ни в виде хеша. Из него функцией Argon2id (она намеренно медленная и требует 64 МБ памяти, чтобы перебор был дорогим) выводится ключ сети. В сеть уходит только обезличенный отпечаток этого ключа, по которому нельзя восстановить ни пароль, ни название.",
+        },
+        {
+          h: "Почему нельзя войти без пароля",
+          p: "Проверки пароля как таковой в протоколе нет — и обходить, соответственно, нечего. Ключ сети подмешивается в вывод сессионного ключа шифрования. У того, кто ввёл неверный пароль, получается другой ключ, и он просто не может расшифровать первый же пакет. Дверь не «заперта на замок» — её для чужого не существует.",
+        },
+        {
+          h: "Чем шифруется переписка",
+          p: "Каждая установка приложения при первом запуске создаёт постоянную пару ключей X25519. Когда двое общаются, из их ключей математически выводится общий секрет, который знают только они (алгоритм Диффи-Хеллмана). Им шифруется трафик — XChaCha20-Poly1305. Шифр аутентифицированный: изменённый по дороге байт не расшифруется вовсе, подмена невозможна.",
+        },
+        {
+          h: "Почему серверу-посреднику не нужно доверять",
+          p: "Он видит только зашифрованный поток и обезличенный идентификатор комнаты. Ключей у него нет: они выводятся из личных ключей участников, которых сервер не знает. Прочитать переписку, подделать сообщение или войти в вашу сеть он не может, даже если его взломают. Максимум — перестать пересылать, то есть уронить связь.",
+        },
+        {
+          h: "Отпечаток ключа",
+          p: "Ключи собеседников запоминаются при первой встрече и потом проверяются автоматически: если ключ сменился, участник отвергается. Уязвима только самая первая встреча — приложение ещё не знает, чей ключ настоящий. Поэтому в панели сети показан короткий отпечаток вашего ключа: сверьте его с собеседником голосом один раз, и подмена исключена полностью.",
+        },
+        {
+          h: "Что видно со стороны",
+          p: "Владелец сервера-посредника и любой наблюдатель на пути видят ваш IP-адрес, идентификатор комнаты, время и объём трафика. Содержимое переписки — нет. Полностью скрыть метаданные можно, только подняв сервер на машине, которой вы доверяете.",
+        },
+        {
+          h: "Локальный режим менее защищён",
+          p: "В обычной локальной сети сообщения передаются открытым текстом и не подписываются — любой в той же сети технически может их прочитать или отправить от вашего имени. Так сделано намеренно: режим рассчитан на домашнюю сеть. В общественном Wi-Fi пользуйтесь режимом сети Cloudix, он защищён независимо от того, какая вокруг сеть.",
+        },
+        {
+          h: "На чём всё написано",
+          p: "Ядро — Go: сеть, база данных, шифрование. Интерфейс — React внутри системного браузерного движка, связка через Wails. Криптография не самодельная: взяты стандартные проверенные реализации из golang.org/x/crypto. Важная оговорка — сама сборка не проходила внешний аудит безопасности.",
+        },
+      ],
+    },
     mediaViewer: {
       download: "Скачать",
       close: "Закрыть",
@@ -350,6 +413,69 @@ const dict = {
       security: "Traffic between members is end-to-end encrypted — the host cannot read it.",
       notLan: "This is an overlay for Cloudix traffic, not a system VPN: other apps and games do not go through it.",
       errNoProfile: "Create a profile first.",
+    },
+    docs: {
+      button: "How it works",
+      title: "How Cloudix works",
+      close: "Close",
+      sections: [
+        {
+          h: "The core idea",
+          p: "A normal messenger sends your message to a company's server, which passes it on. Cloudix does not: messages travel straight between your devices. No accounts, no sign-up, no database on someone else's side — your profile and history live only on your machine, in a SQLite file.",
+        },
+        {
+          h: "How you are found",
+          p: "On a local network the app broadcasts a short \"I am here, my name is…\" packet every two seconds (UDP multicast on 239.255.42.99:47990) and listens for others. Nothing to configure — devices simply see each other. A peer silent for more than 8 seconds drops off the list.",
+        },
+        {
+          h: "How messages travel",
+          p: "Devices open a plain TCP connection and exchange lines of JSON. A message sent to someone offline is stored as undelivered and goes out by itself once they reappear. Photos and video ride the same channel, embedded in the message.",
+        },
+        {
+          h: "Calls and screen sharing",
+          p: "This is WebRTC, the same technology behind Google Meet and Discord. The two sides exchange technical descriptions over the normal Cloudix channel (this is called signalling), after which audio and video flow directly. The media stream is always encrypted — that is built into WebRTC itself (DTLS-SRTP) and cannot be turned off.",
+        },
+        {
+          h: "Why a call sometimes will not connect",
+          p: "Home routers do not accept incoming connections; this is NAT. Devices usually get around it with a STUN server that tells each side its own public address. But when the provider hides both sides behind one shared address (CGNAT) there is no direct path at all, and a TURN server has to relay the stream. Its address goes in the settings.",
+        },
+        {
+          h: "Cloudix network: talking over the internet",
+          p: "Devices on different networks cannot find each other. One participant then creates a network with a name and password and the others join. If the creator has a public IP the connection is direct; if not, both connect to a relay server that you run yourself and whose address you enter in the app. No server is baked into the code.",
+        },
+        {
+          h: "How the network password is protected",
+          p: "The password is never transmitted — not in the clear, not as a hash. Argon2id (deliberately slow and demanding 64 MB of memory, so guessing is expensive) stretches it into a network key. Only a blinded fingerprint of that key goes on the wire, and neither the password nor the name can be recovered from it.",
+        },
+        {
+          h: "Why the wrong password cannot get in",
+          p: "There is no password check in the protocol, so there is nothing to bypass. The network key is folded into the derivation of the session encryption key. Someone with the wrong password derives a different key and simply cannot decrypt the very first packet. The door is not locked — for an outsider it does not exist.",
+        },
+        {
+          h: "What encrypts the conversation",
+          p: "Every installation generates a permanent X25519 key pair on first run. When two people talk, a shared secret only they can compute is derived from their keys (Diffie-Hellman). That secret encrypts the traffic with XChaCha20-Poly1305. The cipher is authenticated: a byte altered in transit will not decrypt at all, so tampering is impossible.",
+        },
+        {
+          h: "Why the relay does not need to be trusted",
+          p: "It sees only an encrypted stream and an anonymous room identifier. It holds no keys: those are derived from the participants' private keys, which it never sees. It cannot read the conversation, forge a message or enter your network even if it is compromised. The most it can do is stop forwarding — that is a dropped connection, not a leak.",
+        },
+        {
+          h: "Key fingerprint",
+          p: "Peers' keys are remembered on first contact and checked automatically afterwards: a key that changes is refused. Only that very first contact is vulnerable, because the app does not yet know which key is genuine. The network panel therefore shows a short fingerprint of your key — read it out to each other once and impersonation is ruled out entirely.",
+        },
+        {
+          h: "What is visible from outside",
+          p: "The relay operator, and anyone watching the path, can see your IP address, the room identifier, and the timing and volume of traffic. The contents, no. Hiding the metadata too means running the relay on a machine you trust.",
+        },
+        {
+          h: "The local mode is less protected",
+          p: "On a plain local network messages are sent as plaintext and are not signed — anyone on that network can technically read them or send one in your name. That is deliberate: the mode is meant for a home network. On public Wi-Fi use the Cloudix network mode, which is protected regardless of the network around it.",
+        },
+        {
+          h: "What it is built with",
+          p: "The core is Go: networking, database, cryptography. The interface is React inside the system browser engine, joined by Wails. The cryptography is not homemade — it uses the standard vetted implementations from golang.org/x/crypto. One caveat worth stating: this build has not had an external security audit.",
+        },
+      ],
     },
     mediaViewer: {
       download: "Download",

@@ -547,12 +547,20 @@ function Sidebar({
   setTheme,
   onRescan,
   onOpenNetwork,
+  onOpenDocs,
   netActive,
 }) {
   // FIX: убраны вкладки "groups"/"channels" по запросу — они никогда не были
   // реализованы и только занимали место. "saved" тоже убрана как отдельная
   // вкладка — теперь это закреплённый чат сверху списка (см. App: savedChatMeta).
   const tabsOrder = ["all", "online"];
+
+  // Unread across every chat, so the tab shows new messages even while the
+  // "Online" tab is the one being looked at.
+  const totalUnread = (Array.isArray(chats) ? chats : []).reduce(
+    (sum, c) => sum + (c?.unread || 0),
+    0
+  );
 
   const filtered = (Array.isArray(chats) ? chats : []).filter((c) => {
     const title = (c?.title || "").toLowerCase();
@@ -602,6 +610,11 @@ function Sidebar({
             {t.tabs[tb]}
             {tb === "online" && onlinePeers.length > 0 && (
               <span className="tab-count">{onlinePeers.length}</span>
+            )}
+            {tb === "all" && totalUnread > 0 && (
+              <span className="tab-count unread">
+                {totalUnread > 99 ? "99+" : totalUnread}
+              </span>
             )}
           </button>
         ))}
@@ -695,8 +708,26 @@ function Sidebar({
       )}
 
       <div className="sidebar-footer">
-        <button type="button" className="footer-btn" onClick={onOpenSettings}>
-          ⚙ {t.settingsBtn}
+        <button type="button" className="footer-btn" onClick={onOpenSettings} title={t.settingsBtn}>
+          ⚙<span className="footer-btn-label">{t.settingsBtn}</span>
+        </button>
+        <button
+          type="button"
+          className="footer-btn icon-only"
+          title={t.docs.button}
+          aria-label={t.docs.button}
+          onClick={onOpenDocs}
+        >
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.4" />
+            <path
+              d="M6.2 6.1a1.9 1.9 0 1 1 2.3 2.2c-.4.1-.6.4-.6.8v.4"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+            />
+            <circle cx="8" cy="11.6" r="0.85" fill="currentColor" />
+          </svg>
         </button>
         <button
           type="button"
@@ -1113,6 +1144,51 @@ function NetworkPanel({ status, t, onClose, onRefresh }) {
           <div className="net-hint net-note">🔒 {t.net.security}</div>
           <div className="net-hint net-note">🖧 {t.net.relayOwn}</div>
           <div className="net-hint net-note">ℹ️ {t.net.notLan}</div>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// Plain-language explanation of what the app does and what its security rests
+// on, reachable from the sidebar footer.
+function DocsPanel({ t, onClose }) {
+  return (
+    <motion.div
+      className="profile-overlay"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onClick={onClose}
+      style={{ justifyContent: "center", alignItems: "center" }}
+    >
+      <motion.div
+        className="net-panel docs-panel glass-strong"
+        initial={{ opacity: 0, y: 16, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 10, scale: 0.97 }}
+        transition={{ type: "spring", stiffness: 300, damping: 28 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="net-head">
+          <div className="net-title">{t.docs.title}</div>
+          <button
+            type="button"
+            className="screen-btn"
+            onClick={onClose}
+            aria-label={t.docs.close}
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="net-body docs-body">
+          {t.docs.sections.map((section, i) => (
+            <section key={i} className="docs-section">
+              <h3>{section.h}</h3>
+              <p>{section.p}</p>
+            </section>
+          ))}
         </div>
       </motion.div>
     </motion.div>
@@ -3772,6 +3848,7 @@ export default function App() {
   const [activeChat, setActiveChat] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showNetwork, setShowNetwork] = useState(false);
+  const [showDocs, setShowDocs] = useState(false);
   const [vpnStatus, setVpnStatus] = useState(null);
   const [connStatus, setConnStatus] = useState("connecting");
   const [onlinePeersRaw, setOnlinePeersRaw] = useState([]);
@@ -4385,6 +4462,7 @@ export default function App() {
     setActiveChat(null);
     setShowSettings(false);
     setShowNetwork(false);
+    setShowDocs(false);
     setVpnStatus(null);
     setProfileTarget(null);
     setMediaChatId(null);
@@ -4485,6 +4563,7 @@ export default function App() {
           setTheme={setTheme}
           onRescan={rescanPeers}
           onOpenNetwork={() => setShowNetwork(true)}
+          onOpenDocs={() => setShowDocs(true)}
           netActive={!!vpnStatus?.active}
         />
 
@@ -4558,6 +4637,8 @@ export default function App() {
             t={t}
           />
         )}
+
+        {showDocs && <DocsPanel t={t} onClose={() => setShowDocs(false)} />}
 
         {showNetwork && (
           <NetworkPanel
