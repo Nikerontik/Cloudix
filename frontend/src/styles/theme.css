@@ -8,6 +8,7 @@
 
 :root {
   --titlebar-h: 38px;
+  --winbar-h: 38px;
   --sidebar-w: 320px;
   --radius-xl: 22px;
   --radius-lg: 16px;
@@ -357,6 +358,14 @@ button {
   line-height: 1.1;
 }
 
+.brand-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  --wails-draggable: no-drag;
+}
+
 .icon-btn {
   width: 32px;
   height: 32px;
@@ -384,6 +393,16 @@ button {
 
 .icon-btn:active {
   transform: scale(0.92);
+}
+
+.icon-btn.spinning svg,
+.icon-btn.spinning span {
+  animation: spin 0.8s linear infinite;
+}
+
+.icon-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .sidebar-header {
@@ -1696,7 +1715,10 @@ button {
   z-index: 5;
 }
 
-[data-platform="windows"] .onboarding-theme,
+[data-platform="windows"] .onboarding-theme {
+  top: calc(var(--winbar-h) + 12px);
+}
+
 [data-platform="linux"] .onboarding-theme {
   top: 14px;
 }
@@ -1857,7 +1879,7 @@ button {
    matches the theme instead of the OS grey. macOS never renders this. */
 
 .win-titlebar {
-  height: 34px;
+  height: var(--winbar-h);
   flex-shrink: 0;
   display: flex;
   align-items: stretch;
@@ -1880,16 +1902,6 @@ button {
   --wails-draggable: drag;
 }
 
-.win-title {
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .win-dot {
   width: 9px;
   height: 9px;
@@ -1906,7 +1918,7 @@ button {
 }
 
 .win-btn {
-  width: 46px;
+  width: 44px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
@@ -1934,21 +1946,34 @@ button {
 
 /* ------------------------------------------------- screen share view --- */
 
+.screen-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
 .screen-panel {
   pointer-events: auto;
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: min(720px, 78vw);
-  transform: translate(-50%, -50%);
   border-radius: var(--radius-lg);
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 24px);
 }
 
-.screen-panel.minimized {
-  width: 260px;
+/* "Expand" fills the app window rather than using the native Fullscreen API:
+   element fullscreen is unreliable in WKWebView and blacked out the whole
+   window in WebView2. */
+.screen-panel.expanded {
+  position: absolute;
+  inset: 12px;
+  width: auto !important;
+  max-width: none;
+  max-height: none;
 }
 
 .screen-head {
@@ -2034,31 +2059,80 @@ button {
 
 .screen-stage {
   position: relative;
-  background: #000;
+  background: #05070b;
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Holds shape before the first frame arrives, so the panel never collapses
+     into a flat sliver while waiting for media. */
+  aspect-ratio: 16 / 9;
+  width: 100%;
   min-height: 0;
+}
+
+.screen-panel.expanded .screen-stage {
+  aspect-ratio: auto;
+  flex: 1;
 }
 
 .screen-stage video {
   width: 100%;
-  max-height: 62vh;
+  height: 100%;
   display: block;
   object-fit: contain;
-  background: #000;
+  background: #05070b;
 }
 
-/* Native fullscreen on the stage: fill the display, keep controls reachable. */
-.screen-stage:fullscreen {
-  width: 100vw;
-  height: 100vh;
+.screen-waiting {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 20px;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
-.screen-stage:fullscreen video {
-  max-height: 100vh;
-  height: 100vh;
-  object-fit: contain;
+.screen-waiting-spinner {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: rgba(255, 255, 255, 0.75);
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Drag the bottom-right corner to set the panel size; it is remembered. */
+.screen-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  z-index: 5;
+  --wails-draggable: no-drag;
+}
+
+.screen-resize::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--text-tertiary);
+  border-bottom: 2px solid var(--text-tertiary);
+  opacity: 0.7;
 }
 
 .screen-volume {

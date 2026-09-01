@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { motion, AnimatePresence, useDragControls } from "framer-motion";
+import { motion, AnimatePresence, useDragControls, useMotionValue } from "framer-motion";
 import { useT, previewText } from "./i18n";
 import * as WailsApp from "../wailsjs/go/app/App";
 import {
@@ -75,10 +75,7 @@ function WindowsTitlebar({ t }) {
 
   return (
     <div className="win-titlebar">
-      <div className="win-titlebar-drag" onDoubleClick={toggle}>
-        <span className="win-dot" />
-        <span className="win-title">{t.appName}</span>
-      </div>
+      <div className="win-titlebar-drag" onDoubleClick={toggle} />
       <div className="win-controls">
         <button
           type="button"
@@ -163,6 +160,52 @@ function rewriteSdpMdns(desc, peerIp) {
 function rewriteMdnsCandidate(init, peerIp) {
   if (!peerIp || !init || typeof init.candidate !== "string") return init;
   return { ...init, candidate: rewriteCandidateLine(init.candidate, peerIp) };
+}
+
+// Re-binds the discovery sockets and re-polls peers. Multicast announces get
+// lost often enough (interface changes, sleep, VPN adapters) that a manual
+// "find people again" is worth a button.
+function RescanButton({ t, onRescan }) {
+  const [busy, setBusy] = useState(false);
+
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onRescan();
+    } finally {
+      // Keep the spin visible long enough to read as feedback.
+      setTimeout(() => setBusy(false), 700);
+    }
+  };
+
+  return (
+    <motion.button
+      type="button"
+      className={"icon-btn " + (busy ? "spinning" : "")}
+      title={busy ? t.rescanning : t.rescan}
+      aria-label={t.rescan}
+      onClick={run}
+      disabled={busy}
+      whileTap={{ scale: 0.86 }}
+    >
+      <svg viewBox="0 0 16 16" width="15" height="15" fill="none" aria-hidden="true">
+        <path
+          d="M14 8a6 6 0 1 1-1.76-4.24"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
+        <path
+          d="M14 2v4h-4"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </motion.button>
+  );
 }
 
 function ThemeButton({ theme, setTheme, t, className = "" }) {
@@ -389,6 +432,7 @@ function Sidebar({
   typingByPeer,
   theme,
   setTheme,
+  onRescan,
 }) {
   // FIX: убраны вкладки "groups"/"channels" по запросу — они никогда не были
   // реализованы и только занимали место. "saved" тоже убрана как отдельная
@@ -410,7 +454,10 @@ function Sidebar({
           the window controls. */}
       <div className="sidebar-brand">
         <span className="brand-title">{t.appName}</span>
-        <ThemeButton theme={theme} setTheme={setTheme} t={t} />
+        <div className="brand-actions">
+          <RescanButton t={t} onRescan={onRescan} />
+          <ThemeButton theme={theme} setTheme={setTheme} t={t} />
+        </div>
       </div>
 
       <div className="sidebar-header">
@@ -648,7 +695,18 @@ function MediaPanel({ messages, onClose, onOpenMedia, t }) {
   );
 }
 
-const RTC_CONFIG = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+const RTC_CONFIG = {
+  iceServers: [
+    {
+      urls: [
+        "stun:stun.l.google.com:19302",
+        "stun:stun1.l.google.com:19302",
+        "stun:stun.cloudflare.com:3478",
+      ],
+    },
+  ],
+  iceCandidatePoolSize: 2,
+};
 
 function CallModal({
   target,
@@ -675,6 +733,12 @@ function CallModal({
   const [sharing, setSharing] = useState(false);
   const [remoteScreen, setRemoteScreen] = useState(false);
   const [screenMinimized, setScreenMinimized] = useState(false);
+  const [screenExpanded, setScreenExpanded] = useState(false);
+  const [screenReady, setScreenReady] = useState(false);
+  const [screenWidth, setScreenWidth] = useState(() => {
+    const stored = parseInt(readStored("cloudix:screen-width", "760"), 10);
+    return Number.isFinite(stored) ? Math.min(1600, Math.max(320, stored)) : 760;
+  });
   const [screenVolume, setScreenVolume] = useState(1);
   const [diagOpen, setDiagOpen] = useState(false);
   const [diag, setDiag] = useState("");
@@ -708,18 +772,86 @@ function CallModal({
   const screenVideoRef = useRef(null);
   const screenStageRef = useRef(null);
   const screenVolumeRef = useRef(1);
+  const screenWidthRef = useRef(760);
+  const screenX = useMotionValue(0);
+  const screenY = useMotionValue(0);
   // Track ids the peer announced as their screen (WebRTC carries no such
   // labelling, so it rides on a `screen-on` signal).
   const screenIdsRef = useRef({ video: "", audio: "" });
   // Every remote track we have seen, so a late `screen-on` can reclassify them.
   const receivedTracksRef = useRef([]);
+  const iceStatsRef = useRef({
+    sent: 0,
+    received: 0,
+    added: 0,
+    rejected: 0,
+    lastError: "",
+    lastCandidate: "",
+  });
   // Best-known real IP of the peer, used to de-obfuscate their mDNS ICE
   // candidates. Seeded from discovery, refreshed from every incoming signal.
   const peerIpRef = useRef(target.ip || "");
 
+  const firstMid = (pc) => {
+    const mids = (pc.remoteDescription?.sdp || "").match(/^a=mid:(.+)$/m);
+    return mids ? mids[1].trim() : "0";
+  };
+
+  // Implementations disagree about mDNS names and about mid naming under
+  // BUNDLE, and a rejected candidate is silent. So offer several equivalent
+  // forms and keep whichever the local stack accepts.
   const addRemoteCandidate = async (pc, raw) => {
-    const init = rewriteMdnsCandidate(JSON.parse(raw), peerIpRef.current);
-    await pc.addIceCandidate(init);
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (!parsed || !parsed.candidate) return;
+
+    iceStatsRef.current.received += 1;
+
+    const rewritten = rewriteMdnsCandidate(parsed, peerIpRef.current);
+    const primary = [];
+    if (rewritten.candidate !== parsed.candidate) primary.push(rewritten);
+    primary.push(parsed);
+
+    let accepted = 0;
+    let lastErr = null;
+
+    for (const variant of primary) {
+      try {
+        await pc.addIceCandidate(variant);
+        accepted += 1;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+
+    if (!accepted) {
+      for (const variant of primary) {
+        try {
+          await pc.addIceCandidate({
+            candidate: variant.candidate,
+            sdpMid: firstMid(pc),
+            sdpMLineIndex: 0,
+          });
+          accepted += 1;
+          break;
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+    }
+
+    if (accepted) {
+      iceStatsRef.current.added += 1;
+    } else {
+      iceStatsRef.current.rejected += 1;
+      iceStatsRef.current.lastError = String(lastErr?.message || lastErr || "unknown");
+      iceStatsRef.current.lastCandidate = String(parsed.candidate).slice(0, 120);
+      console.warn("addIceCandidate rejected all variants", lastErr, parsed.candidate);
+    }
   };
 
   const drainPendingIce = async () => {
@@ -788,6 +920,17 @@ function CallModal({
       console.warn("refreshScreenUi failed:", err);
     }
   };
+
+  useEffect(() => {
+    screenWidthRef.current = screenWidth;
+  }, [screenWidth]);
+
+  useEffect(() => {
+    if (!remoteScreen) {
+      setScreenReady(false);
+      setScreenExpanded(false);
+    }
+  }, [remoteScreen]);
 
   const handleScreenVolumeChange = (e) => {
     const v = parseFloat(e.target.value);
@@ -858,6 +1001,8 @@ function CallModal({
     setSharing(false);
     setRemoteScreen(false);
     setScreenMinimized(false);
+    setScreenExpanded(false);
+    setScreenReady(false);
     setDiagOpen(false);
     screenIdsRef.current = { video: "", audio: "" };
     screenSendersRef.current = [];
@@ -936,6 +1081,7 @@ function CallModal({
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
+        iceStatsRef.current.sent += 1;
         WailsApp.SendSignal(
           target.peerId,
           callId,
@@ -1175,11 +1321,42 @@ function CallModal({
     else startScreenShare();
   };
 
-  const toggleScreenFullscreen = () => {
-    const el = screenStageRef.current;
-    if (!el) return;
-    if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
-    else el.requestFullscreen?.().catch((err) => console.warn("fullscreen failed", err));
+  // Expand fills the app window instead of calling requestFullscreen: element
+  // fullscreen is a no-op in WKWebView and blacked out the whole window in
+  // WebView2, so this behaves the same on both platforms.
+  const toggleScreenExpanded = () => {
+    setScreenExpanded((v) => {
+      const next = !v;
+      if (next) {
+        screenX.set(0);
+        screenY.set(0);
+        setScreenMinimized(false);
+      }
+      return next;
+    });
+  };
+
+  const startScreenResize = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startW = screenWidthRef.current;
+
+    const onMove = (ev) => {
+      // Panel is centre-anchored, so it grows from both edges at once.
+      const next = Math.max(320, Math.min(1600, startW + (ev.clientX - startX) * 2));
+      screenWidthRef.current = next;
+      setScreenWidth(next);
+    };
+    const onUp = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      try {
+        localStorage.setItem("cloudix:screen-width", String(screenWidthRef.current));
+      } catch {}
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
   };
 
   const handleOfferLike = async (pc, payload) => {
@@ -1388,7 +1565,14 @@ function CallModal({
         `ice-conn:   ${pc.iceConnectionState}`,
         `conn:       ${pc.connectionState ?? "(unsupported)"}`,
         `peer-ip:    ${peerIpRef.current || "(unknown)"}`,
+        `cand sent:  ${iceStatsRef.current.sent}`,
+        `cand recv:  ${iceStatsRef.current.received}` +
+          ` added:${iceStatsRef.current.added} rejected:${iceStatsRef.current.rejected}`,
       ];
+      if (iceStatsRef.current.rejected) {
+        lines.push(`reject err: ${iceStatsRef.current.lastError}`);
+        lines.push(`reject cand: ${iceStatsRef.current.lastCandidate}`);
+      }
       try {
         const stats = await pc.getStats();
         const local = {};
@@ -1593,81 +1777,109 @@ function CallModal({
 
       <AnimatePresence>
         {remoteScreen && (
-          <motion.div
-            className="screen-panel glass-strong"
-            drag
-            dragMomentum={false}
-            dragElastic={0.04}
-            dragListener={false}
-            dragControls={screenDragControls}
-            dragConstraints={{ left: -460, right: 460, top: -300, bottom: 300 }}
-            initial={{ opacity: 0, scale: 0.94 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.94 }}
-            transition={{ type: "spring", stiffness: 300, damping: 28 }}
-          >
-            <div
-              className="screen-head"
-              title={t.call.dragHint}
-              onPointerDown={(e) => screenDragControls.start(e)}
-              onDoubleClick={toggleScreenFullscreen}
+          <div className="screen-layer">
+            <motion.div
+              className={
+                "screen-panel glass-strong" + (screenExpanded ? " expanded" : "")
+              }
+              style={{
+                x: screenX,
+                y: screenY,
+                width: screenExpanded ? undefined : screenWidth,
+              }}
+              drag={!screenExpanded}
+              dragMomentum={false}
+              dragElastic={0.04}
+              dragListener={false}
+              dragControls={screenDragControls}
+              dragConstraints={{ left: -460, right: 460, top: -300, bottom: 300 }}
+              initial={{ opacity: 0, scale: 0.94 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.94 }}
+              transition={{ type: "spring", stiffness: 300, damping: 28 }}
             >
-              <span className="screen-live">live</span>
-              <span className="screen-title">{t.call.screenOf}</span>
-              <div className="screen-head-actions">
-                <button
-                  type="button"
-                  className="screen-btn"
-                  title={screenMinimized ? t.call.expand : t.call.minimize}
-                  aria-label={screenMinimized ? t.call.expand : t.call.minimize}
-                  onClick={() => setScreenMinimized((v) => !v)}
-                >
-                  {screenMinimized ? "▣" : "—"}
-                </button>
-                <button
-                  type="button"
-                  className="screen-btn"
-                  title={t.call.fullscreen}
-                  aria-label={t.call.fullscreen}
-                  onClick={toggleScreenFullscreen}
-                >
-                  ⛶
-                </button>
+              <div
+                className="screen-head"
+                title={t.call.dragHint}
+                onPointerDown={(e) => !screenExpanded && screenDragControls.start(e)}
+                onDoubleClick={toggleScreenExpanded}
+              >
+                <span className="screen-live">live</span>
+                <span className="screen-title">{t.call.screenOf}</span>
+                <div className="screen-head-actions">
+                  <button
+                    type="button"
+                    className="screen-btn"
+                    title={screenMinimized ? t.call.expand : t.call.minimize}
+                    aria-label={screenMinimized ? t.call.expand : t.call.minimize}
+                    onClick={() => setScreenMinimized((v) => !v)}
+                  >
+                    {screenMinimized ? "▣" : "—"}
+                  </button>
+                  <button
+                    type="button"
+                    className="screen-btn"
+                    title={screenExpanded ? t.call.exitFullscreen : t.call.fullscreen}
+                    aria-label={screenExpanded ? t.call.exitFullscreen : t.call.fullscreen}
+                    onClick={toggleScreenExpanded}
+                  >
+                    {screenExpanded ? "⤡" : "⛶"}
+                  </button>
+                </div>
               </div>
-            </div>
 
-            {/* Kept mounted while minimized so the video element never loses
-                its stream (re-attaching costs a black frame + a reflow). */}
-            <div
-              className="screen-stage"
-              ref={screenStageRef}
-              style={screenMinimized ? { display: "none" } : undefined}
-            >
-              <video
-                ref={screenVideoRef}
-                autoPlay
-                playsInline
-                onDoubleClick={toggleScreenFullscreen}
-              />
-            </div>
-
-            {!screenMinimized && (
-              <div className="screen-volume" title={t.call.screenVolume}>
-                <span>🔈</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={screenVolume}
-                  onChange={handleScreenVolumeChange}
+              {/* Kept mounted while minimized so the video element never loses
+                  its stream (re-attaching costs a black frame + a reflow). */}
+              <div
+                className="screen-stage"
+                ref={screenStageRef}
+                style={screenMinimized ? { display: "none" } : undefined}
+              >
+                <video
+                  ref={screenVideoRef}
+                  autoPlay
+                  playsInline
+                  onDoubleClick={toggleScreenExpanded}
+                  onLoadedMetadata={(e) =>
+                    setScreenReady(e.currentTarget.videoWidth > 0)
+                  }
+                  onResize={(e) => setScreenReady(e.currentTarget.videoWidth > 0)}
+                  onEmptied={() => setScreenReady(false)}
                 />
-                <span className="screen-volume-value">
-                  {Math.round(screenVolume * 100)}%
-                </span>
+                {!screenReady && (
+                  <div className="screen-waiting">
+                    <span className="screen-waiting-spinner" />
+                    <span>{t.call.waiting}</span>
+                  </div>
+                )}
               </div>
-            )}
-          </motion.div>
+
+              {!screenMinimized && (
+                <div className="screen-volume" title={t.call.screenVolume}>
+                  <span>🔈</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={screenVolume}
+                    onChange={handleScreenVolumeChange}
+                  />
+                  <span className="screen-volume-value">
+                    {Math.round(screenVolume * 100)}%
+                  </span>
+                </div>
+              )}
+
+              {!screenExpanded && !screenMinimized && (
+                <div
+                  className="screen-resize"
+                  title={t.call.resizeHint}
+                  onPointerDown={startScreenResize}
+                />
+              )}
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
     </div>
@@ -2923,6 +3135,22 @@ export default function App() {
     }
   }, []);
 
+  // Manual "look for peers again": re-bind the discovery sockets on the Go side
+  // (multicast membership is lost on interface changes / sleep), then re-poll.
+  const rescanPeers = useCallback(async () => {
+    try {
+      await WailsApp.RestartNetworking();
+    } catch (err) {
+      console.error("RestartNetworking failed:", err);
+    }
+    try {
+      const ready = await WailsApp.NetworkReady();
+      setConnStatus(ready ? "connected" : "disconnected");
+    } catch {}
+    await refreshOnlinePeers();
+    await refreshChats();
+  }, [refreshOnlinePeers, refreshChats]);
+
   const startCall = (target, video) => {
     if (callState) return;
 
@@ -3064,6 +3292,7 @@ export default function App() {
           typingByPeer={typingByPeer}
           theme={theme}
           setTheme={setTheme}
+          onRescan={rescanPeers}
         />
 
         {showSettings ? (

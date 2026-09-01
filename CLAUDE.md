@@ -10,7 +10,31 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
-## Session state (2026-09-03)
+## Session state (2026-09-04)
+
+**Mac ↔ Windows calls still fail.** First real diagnostics (both sides, `ice-conn: checking`,
+`pair: none succeeded yet`):
+
+| | Mac | Windows |
+|---|---|---|
+| local candidates | `host:4` (no srflx — STUN unreachable) | `host:8 srflx:1` |
+| remote candidates | `srflx:1` | `host:1` |
+
+Both hosts are on the same /24 (`192.168.10.248` / `.132`). The signalling channel is
+reliable TCP and messaging works, so **candidates are being lost after delivery** — almost
+certainly rejected by `addIceCandidate` (the old code swallowed those errors). Mac accepted
+none of Windows' 8 host candidates; those are exactly the mDNS-rewritten ones.
+
+This pass: `addRemoteCandidate` now tries the rewritten form, the original form, and a
+BUNDLE-normalised form (`sdpMid` forced to the first mid), counting sent / received /
+added / rejected plus the last rejection error and candidate — all shown in the call
+diagnostics panel. **Next test must report `cand sent/recv/added/rejected` and
+`reject err` from both sides.** Also added two more STUN servers (the Mac got no srflx).
+
+Not yet ruled out: Windows Firewall dropping inbound UDP for the app, WebKit refusing a
+rewritten candidate outright.
+
+## Older session state (2026-09-03)
 
 - Mac ↔ Windows LAN calls **still fail** after the first mDNS fix. Second pass added:
   candidate rewriting inside the offer/answer **SDP** (not just trickled ICE), and a live
@@ -22,6 +46,14 @@ notes, RU/EN i18n, light/dark themes.
 - **Next step (user):** re-test calls + screen share across two machines.
 
 ## Screen sharing
+
+The viewer's **"expand" fills the app window; it deliberately does not use the native
+Fullscreen API** — `requestFullscreen` is a no-op in WKWebView and blacked out the entire
+window in WebView2. The panel is centred by a flex layer (`.screen-layer`) rather than a
+CSS transform, because framer-motion owns `transform` for dragging. `.screen-stage` holds
+`aspect-ratio: 16/9` so the panel keeps its shape before the first frame, and a spinner
+placeholder shows until `videoWidth > 0`. Panel width is drag-resizable from the corner and
+persisted in `localStorage` (`cloudix:screen-width`).
 
 `getDisplayMedia` at 1080p60 with `contentHint = "detail"`, `maintain-resolution` and an
 8 Mbps cap. WebRTC carries no notion of "this track is a screen", so the presenter sends a
