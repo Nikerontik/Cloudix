@@ -2,7 +2,15 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { motion, AnimatePresence, useDragControls } from "framer-motion";
 import { useT, previewText } from "./i18n";
 import * as WailsApp from "../wailsjs/go/app/App";
-import { EventsOn, Environment, BrowserOpenURL } from "../wailsjs/runtime/runtime";
+import {
+  EventsOn,
+  Environment,
+  BrowserOpenURL,
+  WindowMinimise,
+  WindowToggleMaximise,
+  WindowIsMaximised,
+  Quit,
+} from "../wailsjs/runtime/runtime";
 
 const REACTIONS = ["👍", "❤️", "🔥", "😂", "👎"];
 const SAVED_CHAT_ID = "__saved__";
@@ -40,17 +48,121 @@ if (typeof document !== "undefined") {
   document.documentElement.setAttribute("data-platform", guessPlatform());
 }
 
+// Our own window chrome for Windows, where the app runs frameless (see
+// main.go). macOS keeps its native traffic lights and never renders this.
+function WindowsTitlebar({ t }) {
+  const [maximized, setMaximized] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const sync = () => {
+      WindowIsMaximised()
+        .then((v) => alive && setMaximized(!!v))
+        .catch(() => {});
+    };
+    sync();
+    window.addEventListener("resize", sync);
+    return () => {
+      alive = false;
+      window.removeEventListener("resize", sync);
+    };
+  }, []);
+
+  const toggle = () => {
+    WindowToggleMaximise();
+    setMaximized((v) => !v);
+  };
+
+  return (
+    <div className="win-titlebar">
+      <div className="win-titlebar-drag" onDoubleClick={toggle}>
+        <span className="win-dot" />
+        <span className="win-title">{t.appName}</span>
+      </div>
+      <div className="win-controls">
+        <button
+          type="button"
+          className="win-btn"
+          title={t.win.minimize}
+          aria-label={t.win.minimize}
+          onClick={() => WindowMinimise()}
+        >
+          <svg viewBox="0 0 10 10" aria-hidden="true">
+            <rect x="0" y="4.5" width="10" height="1" fill="currentColor" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="win-btn"
+          title={maximized ? t.win.restore : t.win.maximize}
+          aria-label={maximized ? t.win.restore : t.win.maximize}
+          onClick={toggle}
+        >
+          {maximized ? (
+            <svg viewBox="0 0 10 10" aria-hidden="true">
+              <rect x="0" y="2.5" width="7.5" height="7.5" fill="none" stroke="currentColor" />
+              <path d="M2.5 2.5V0H10v7.5H7.5" fill="none" stroke="currentColor" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 10 10" aria-hidden="true">
+              <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" />
+            </svg>
+          )}
+        </button>
+        <button
+          type="button"
+          className="win-btn close"
+          title={t.win.close}
+          aria-label={t.win.close}
+          onClick={() => Quit()}
+        >
+          <svg viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M0 0L10 10M10 0L0 10" stroke="currentColor" fill="none" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Renders the right chrome for the platform: our bar on Windows, the spacer
+// that clears the mac traffic lights everywhere else.
+function AppTitlebar({ platform, t, className = "titlebar" }) {
+  if (platform === "windows") return <WindowsTitlebar t={t} />;
+  return <div className={className} />;
+}
+
 // WebViews hide local IPs behind "<uuid>.local" mDNS ICE candidates. macOS
 // WebKit and Windows WebView2 fail to resolve each other's names, so a
 // Mac<->Windows LAN call gathers candidates but never connects. We already know
 // the peer's real address from the TCP transport, so swap it in.
+function rewriteCandidateLine(line, peerIp) {
+  const parts = line.split(" ");
+  // candidate:<foundation> <component> <proto> <priority> <address> <port> typ ...
+  if (parts.length < 6 || !/\.local$/i.test(parts[4])) return line;
+  parts[4] = peerIp;
+  return parts.join(" ");
+}
+
+// Candidates also ride inside the offer/answer SDP, not just in trickled ICE
+// messages, so the same de-obfuscation has to happen there.
+function rewriteSdpMdns(desc, peerIp) {
+  if (!peerIp || !desc || typeof desc.sdp !== "string") return desc;
+  if (!/\.local/i.test(desc.sdp)) return desc;
+  const sdp = desc.sdp
+    .split(/\r?\n/)
+    .map((line) =>
+      line.startsWith("a=candidate:")
+        ? "a=" + rewriteCandidateLine(line.slice(2), peerIp)
+        : line
+    )
+    .join("\r\n");
+  return { ...desc, sdp };
+}
+
 function rewriteMdnsCandidate(init, peerIp) {
   if (!peerIp || !init || typeof init.candidate !== "string") return init;
-  const parts = init.candidate.split(" ");
-  // candidate:<foundation> <component> <proto> <priority> <address> <port> typ ...
-  if (parts.length < 6 || !/\.local$/i.test(parts[4])) return init;
-  parts[4] = peerIp;
-  return { ...init, candidate: parts.join(" ") };
+  return { ...init, candidate: rewriteCandidateLine(init.candidate, peerIp) };
 }
 
 function ThemeButton({ theme, setTheme, t, className = "" }) {
@@ -94,7 +206,7 @@ function Avatar({ name, avatar, size = "", onClick, online }) {
   );
 }
 
-function Onboarding({ onDone, t, theme, setTheme }) {
+function Onboarding({ onDone, t, theme, setTheme, platform }) {
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
   const [bio, setBio] = useState("");
@@ -136,7 +248,7 @@ function Onboarding({ onDone, t, theme, setTheme }) {
 
   return (
     <div className="onboarding-root">
-      <div className="onboarding-titlebar" />
+      <AppTitlebar platform={platform} t={t} className="onboarding-titlebar" />
       <div className="onboarding-theme">
         <ThemeButton theme={theme} setTheme={setTheme} t={t} />
       </div>
@@ -235,10 +347,10 @@ function Onboarding({ onDone, t, theme, setTheme }) {
   );
 }
 
-function DisclaimerModal({ onDismiss, t }) {
+function DisclaimerModal({ onDismiss, t, platform }) {
   return (
     <div className="onboarding-root">
-      <div className="onboarding-titlebar" />
+      <AppTitlebar platform={platform} t={t} className="onboarding-titlebar" />
       <motion.div
         className="onboarding-card"
         initial={{ opacity: 0, y: 24, scale: 0.96 }}
@@ -557,6 +669,15 @@ function CallModal({
   const [remoteVolume, setRemoteVolume] = useState(1);
   const remoteVolumeRef = useRef(1);
   const dragControls = useDragControls();
+  const screenDragControls = useDragControls();
+
+  // Screen share: `sharing` = we are the presenter, `remoteScreen` = the peer is.
+  const [sharing, setSharing] = useState(false);
+  const [remoteScreen, setRemoteScreen] = useState(false);
+  const [screenMinimized, setScreenMinimized] = useState(false);
+  const [screenVolume, setScreenVolume] = useState(1);
+  const [diagOpen, setDiagOpen] = useState(false);
+  const [diag, setDiag] = useState("");
 
   const handleVolumeChange = (e) => {
     const v = parseFloat(e.target.value);
@@ -581,6 +702,17 @@ function CallModal({
   const closedRef = useRef(false);
   const localVideoSenderRef = useRef(null);
   const disconnectTimerRef = useRef(null);
+  const screenStreamRef = useRef(null);
+  const screenSendersRef = useRef([]);
+  const remoteScreenStreamRef = useRef(new MediaStream());
+  const screenVideoRef = useRef(null);
+  const screenStageRef = useRef(null);
+  const screenVolumeRef = useRef(1);
+  // Track ids the peer announced as their screen (WebRTC carries no such
+  // labelling, so it rides on a `screen-on` signal).
+  const screenIdsRef = useRef({ video: "", audio: "" });
+  // Every remote track we have seen, so a late `screen-on` can reclassify them.
+  const receivedTracksRef = useRef([]);
   // Best-known real IP of the peer, used to de-obfuscate their mDNS ICE
   // candidates. Seeded from discovery, refreshed from every incoming signal.
   const peerIpRef = useRef(target.ip || "");
@@ -605,6 +737,64 @@ function CallModal({
   };
 
   const clearCallError = () => setErrorText("");
+
+  const isScreenTrack = (id) =>
+    !!id && (id === screenIdsRef.current.video || id === screenIdsRef.current.audio);
+
+  // Route a remote track to either the camera/voice stream or the screen-share
+  // stream, moving it if a `screen-on` signal arrived after the track did.
+  const routeTrack = (track) => {
+    const toScreen = isScreenTrack(track.id);
+    const dest = toScreen ? remoteScreenStreamRef.current : remoteStreamRef.current;
+    const other = toScreen ? remoteStreamRef.current : remoteScreenStreamRef.current;
+    try {
+      if (other.getTracks().some((tr) => tr.id === track.id)) other.removeTrack(track);
+      if (!dest.getTracks().some((tr) => tr.id === track.id)) dest.addTrack(track);
+    } catch (err) {
+      console.warn("routeTrack failed", err);
+    }
+  };
+
+  const reclassifyTracks = () => {
+    receivedTracksRef.current = receivedTracksRef.current.filter(
+      (tr) => tr.readyState !== "ended"
+    );
+    receivedTracksRef.current.forEach(routeTrack);
+  };
+
+  const refreshScreenUi = async () => {
+    const live = remoteScreenStreamRef.current
+      .getVideoTracks()
+      .some((tr) => tr.readyState === "live");
+    setRemoteScreen(live);
+    if (!live) {
+      setScreenMinimized(false);
+      if (screenVideoRef.current) {
+        screenVideoRef.current.pause?.();
+        screenVideoRef.current.srcObject = null;
+      }
+      return;
+    }
+    try {
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = remoteScreenStreamRef.current;
+        // The share's own audio lives on this element, so its volume is
+        // independent of the voice-call volume.
+        screenVideoRef.current.muted = false;
+        screenVideoRef.current.volume = screenVolumeRef.current;
+        await screenVideoRef.current.play().catch(() => {});
+      }
+    } catch (err) {
+      console.warn("refreshScreenUi failed:", err);
+    }
+  };
+
+  const handleScreenVolumeChange = (e) => {
+    const v = parseFloat(e.target.value);
+    screenVolumeRef.current = v;
+    setScreenVolume(v);
+    if (screenVideoRef.current) screenVideoRef.current.volume = v;
+  };
 
   const attachRemoteStream = async () => {
     try {
@@ -652,6 +842,12 @@ function CallModal({
     try {
       remoteStreamRef.current?.getTracks().forEach((tr) => tr.stop());
     } catch {}
+    try {
+      screenStreamRef.current?.getTracks().forEach((tr) => tr.stop());
+    } catch {}
+    try {
+      remoteScreenStreamRef.current?.getTracks().forEach((tr) => tr.stop());
+    } catch {}
   };
 
   const resetCallUiState = () => {
@@ -659,6 +855,13 @@ function CallModal({
     setMuted(false);
     setRemoteHasVideo(false);
     setRemoteZoomed(false);
+    setSharing(false);
+    setRemoteScreen(false);
+    setScreenMinimized(false);
+    setDiagOpen(false);
+    screenIdsRef.current = { video: "", audio: "" };
+    screenSendersRef.current = [];
+    receivedTracksRef.current = [];
     setSeconds(0);
     setErrorText("");
     pendingIceRef.current = [];
@@ -692,6 +895,8 @@ function CallModal({
         if (localVideoRef.current) localVideoRef.current.srcObject = null;
         if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
         if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+        if (screenVideoRef.current) screenVideoRef.current.srcObject = null;
+        if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
       } catch {}
 
       stopAllMedia();
@@ -703,6 +908,8 @@ function CallModal({
       pcRef.current = null;
       localStreamRef.current = null;
       remoteStreamRef.current = new MediaStream();
+      remoteScreenStreamRef.current = new MediaStream();
+      screenStreamRef.current = null;
       localVideoSenderRef.current = null;
 
       resetCallUiState();
@@ -742,24 +949,26 @@ function CallModal({
     };
 
     pc.ontrack = async (e) => {
-      const incomingStream = e.streams?.[0];
       const track = e.track;
 
-      if (incomingStream) {
-        remoteStreamRef.current = incomingStream;
-      } else {
-        const exists = remoteStreamRef.current.getTracks().some((tr) => tr.id === track.id);
-        if (!exists) remoteStreamRef.current.addTrack(track);
+      // We keep our own streams rather than adopting e.streams[0], because a
+      // track has to be routable between the camera surface and the
+      // screen-share surface as `screen-on`/`screen-off` arrive.
+      if (!receivedTracksRef.current.some((tr) => tr.id === track.id)) {
+        receivedTracksRef.current.push(track);
       }
+      routeTrack(track);
 
-      if (track.kind === "video") {
-        track.onended = () => refreshRemoteVideoUi();
-        track.onmute = () => refreshRemoteVideoUi();
-        track.onunmute = () => refreshRemoteVideoUi();
-      }
+      const refresh = async () => {
+        await refreshRemoteVideoUi();
+        await refreshScreenUi();
+      };
+      track.onended = refresh;
+      track.onmute = refresh;
+      track.onunmute = refresh;
 
       await attachRemoteStream();
-      await refreshRemoteVideoUi();
+      await refresh();
     };
 
     const markConnected = () => {
@@ -844,12 +1053,141 @@ function CallModal({
     });
   };
 
+  // Renegotiation is needed whenever tracks are added or removed mid-call
+  // (screen share on/off). The peer answers with `renegotiate-answer`.
+  const renegotiate = async () => {
+    const pc = pcRef.current;
+    if (!pc || closedRef.current) return;
+    try {
+      makingOfferRef.current = true;
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await WailsApp.SendSignal(
+        target.peerId,
+        callId,
+        "renegotiate-offer",
+        JSON.stringify(pc.localDescription),
+        true
+      );
+    } catch (err) {
+      console.error("renegotiate failed:", err);
+    } finally {
+      makingOfferRef.current = false;
+    }
+  };
+
+  const startScreenShare = async () => {
+    if (sharing || closedRef.current) return;
+    const pc = pcRef.current;
+    if (!pc) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 60, max: 60 },
+        },
+        audio: true,
+      });
+      screenStreamRef.current = stream;
+
+      const videoTrack = stream.getVideoTracks()[0];
+      const audioTrack = stream.getAudioTracks()[0];
+      const senders = [];
+
+      if (videoTrack) {
+        // "detail" + maintain-resolution keeps text sharp instead of letting
+        // the encoder trade resolution for framerate.
+        try {
+          videoTrack.contentHint = "detail";
+        } catch {}
+        const sender = pc.addTrack(videoTrack, stream);
+        senders.push(sender);
+        try {
+          const params = sender.getParameters();
+          params.degradationPreference = "maintain-resolution";
+          params.encodings = [{ maxBitrate: 8000000, maxFramerate: 60 }];
+          await sender.setParameters(params);
+        } catch (err) {
+          console.warn("screen encoding params not applied", err);
+        }
+        // The OS "stop sharing" bar ends the track directly.
+        videoTrack.onended = () => {
+          stopScreenShare();
+        };
+      }
+      if (audioTrack) senders.push(pc.addTrack(audioTrack, stream));
+
+      screenSendersRef.current = senders;
+      setSharing(true);
+
+      await WailsApp.SendSignal(
+        target.peerId,
+        callId,
+        "screen-on",
+        JSON.stringify({
+          video: videoTrack?.id || "",
+          audio: audioTrack?.id || "",
+        }),
+        true
+      );
+      await renegotiate();
+    } catch (err) {
+      // A user cancelling the picker is not an error worth showing.
+      if (err?.name !== "NotAllowedError" && err?.name !== "AbortError") {
+        console.error("startScreenShare failed:", err);
+        setErrorText(t.call.errShare);
+      }
+      screenStreamRef.current?.getTracks().forEach((tr) => tr.stop());
+      screenStreamRef.current = null;
+      setSharing(false);
+    }
+  };
+
+  const stopScreenShare = async () => {
+    const pc = pcRef.current;
+    const senders = screenSendersRef.current;
+    screenSendersRef.current = [];
+
+    senders.forEach((sender) => {
+      try {
+        pc?.removeTrack(sender);
+      } catch (err) {
+        console.warn("removeTrack failed", err);
+      }
+    });
+    try {
+      screenStreamRef.current?.getTracks().forEach((tr) => tr.stop());
+    } catch {}
+    screenStreamRef.current = null;
+    setSharing(false);
+
+    if (closedRef.current) return;
+    try {
+      await WailsApp.SendSignal(target.peerId, callId, "screen-off", "", false);
+    } catch {}
+    await renegotiate();
+  };
+
+  const toggleScreenShare = () => {
+    if (sharing) stopScreenShare();
+    else startScreenShare();
+  };
+
+  const toggleScreenFullscreen = () => {
+    const el = screenStageRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    else el.requestFullscreen?.().catch((err) => console.warn("fullscreen failed", err));
+  };
+
   const handleOfferLike = async (pc, payload) => {
     const offerCollision = pc.signalingState !== "stable";
     ignoreOfferRef.current = !politeRef.current && offerCollision;
     if (ignoreOfferRef.current) return;
 
-    await pc.setRemoteDescription(JSON.parse(payload.data));
+    await pc.setRemoteDescription(rewriteSdpMdns(JSON.parse(payload.data), peerIpRef.current));
     await drainPendingIce();
 
     const answer = await pc.createAnswer();
@@ -897,6 +1235,34 @@ function CallModal({
       return;
     }
 
+    // The peer tells us which inbound track ids carry their screen; the tracks
+    // themselves may arrive before or after this, so always reclassify.
+    if (payload.kind === "screen-on") {
+      try {
+        const ids = JSON.parse(payload.data || "{}");
+        screenIdsRef.current = { video: ids.video || "", audio: ids.audio || "" };
+      } catch {
+        screenIdsRef.current = { video: "", audio: "" };
+      }
+      reclassifyTracks();
+      await refreshRemoteVideoUi();
+      await refreshScreenUi();
+      return;
+    }
+
+    if (payload.kind === "screen-off") {
+      screenIdsRef.current = { video: "", audio: "" };
+      try {
+        remoteScreenStreamRef.current
+          .getTracks()
+          .forEach((tr) => remoteScreenStreamRef.current.removeTrack(tr));
+      } catch {}
+      reclassifyTracks();
+      await refreshRemoteVideoUi();
+      await refreshScreenUi();
+      return;
+    }
+
     const pc = pcRef.current;
 
     if (!pc) {
@@ -908,11 +1274,12 @@ function CallModal({
 
     try {
       if (payload.kind === "answer" || payload.kind === "renegotiate-answer") {
-        await pc.setRemoteDescription(JSON.parse(payload.data));
+        await pc.setRemoteDescription(rewriteSdpMdns(JSON.parse(payload.data), peerIpRef.current));
         await drainPendingIce();
 
         await attachRemoteStream();
         await refreshRemoteVideoUi();
+        await refreshScreenUi();
       } else if (payload.kind === "ice") {
         if (pc.remoteDescription) {
           try {
@@ -927,6 +1294,7 @@ function CallModal({
         await handleOfferLike(pc, payload);
         await attachRemoteStream();
         await refreshRemoteVideoUi();
+        await refreshScreenUi();
       }
     } catch (err) {
       console.error("Signal handler failed:", err, payload);
@@ -945,7 +1313,7 @@ function CallModal({
       await addLocalTracksToPeer(pc, stream);
 
       if (!isCaller && incomingOffer) {
-        await pc.setRemoteDescription(JSON.parse(incomingOffer));
+        await pc.setRemoteDescription(rewriteSdpMdns(JSON.parse(incomingOffer), peerIpRef.current));
         await drainPendingIce();
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
@@ -1000,6 +1368,68 @@ function CallModal({
     const timer = setInterval(() => setSeconds((s) => s + 1), 1000);
     return () => clearInterval(timer);
   }, [phase]);
+
+  // Live ICE diagnostics. Cross-platform LAN calls fail in ways that are
+  // invisible from the UI ("calling" forever), so surface the real states and
+  // the candidate pair actually chosen.
+  useEffect(() => {
+    if (!diagOpen) return;
+    let alive = true;
+
+    const sample = async () => {
+      const pc = pcRef.current;
+      if (!pc) {
+        if (alive) setDiag("no peer connection");
+        return;
+      }
+      const lines = [
+        `signaling:  ${pc.signalingState}`,
+        `ice-gather: ${pc.iceGatheringState}`,
+        `ice-conn:   ${pc.iceConnectionState}`,
+        `conn:       ${pc.connectionState ?? "(unsupported)"}`,
+        `peer-ip:    ${peerIpRef.current || "(unknown)"}`,
+      ];
+      try {
+        const stats = await pc.getStats();
+        const local = {};
+        const remote = {};
+        const byId = new Map();
+        let pair = null;
+        stats.forEach((r) => {
+          byId.set(r.id, r);
+          if (r.type === "local-candidate") local[r.candidateType] = (local[r.candidateType] || 0) + 1;
+          if (r.type === "remote-candidate") remote[r.candidateType] = (remote[r.candidateType] || 0) + 1;
+          if (r.type === "candidate-pair" && (r.selected || r.state === "succeeded")) pair = r;
+        });
+        const fmtCount = (o) =>
+          Object.keys(o).length
+            ? Object.entries(o).map(([k, v]) => `${k}:${v}`).join(" ")
+            : "none";
+        lines.push(`local-cand:  ${fmtCount(local)}`);
+        lines.push(`remote-cand: ${fmtCount(remote)}`);
+        if (pair) {
+          const lc = byId.get(pair.localCandidateId);
+          const rc = byId.get(pair.remoteCandidateId);
+          lines.push(
+            `pair: ${lc?.candidateType || "?"} ${lc?.address || "?"}:${lc?.port || "?"}` +
+              ` -> ${rc?.candidateType || "?"} ${rc?.address || "?"}:${rc?.port || "?"}`
+          );
+        } else {
+          lines.push("pair: none succeeded yet");
+        }
+      } catch (err) {
+        lines.push(`stats error: ${err?.message || err}`);
+      }
+      if (alive) setDiag(lines.join("\n"));
+    };
+
+    sample();
+    const timer = setInterval(sample, 1000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [diagOpen, phase]);
 
   const acceptCall = async () => {
     clearCallError();
@@ -1098,6 +1528,15 @@ function CallModal({
                 <button type="button" className="call-btn" onClick={toggleMute}>
                   {muted ? "🔇" : "🎙"}
                 </button>
+                <button
+                  type="button"
+                  className={"call-btn " + (sharing ? "sharing" : "")}
+                  title={sharing ? t.call.shareStop : t.call.share}
+                  aria-label={sharing ? t.call.shareStop : t.call.share}
+                  onClick={toggleScreenShare}
+                >
+                  🖥
+                </button>
                 <button type="button" className="call-btn end" onClick={endCall}>
                   ✕
                 </button>
@@ -1115,12 +1554,122 @@ function CallModal({
               </div>
               <div className="call-labels">
                 <span>{muted ? t.call.unmute : t.call.mute}</span>
+                <span>{sharing ? t.call.shareStop : t.call.share}</span>
                 <span>{t.call.end}</span>
+              </div>
+              {sharing && (
+                <div className="call-sharing-note">
+                  <span className="screen-live">live</span>
+                  {t.call.sharing}
+                </div>
+              )}
+              <div className="call-diag">
+                <button
+                  type="button"
+                  className="call-diag-toggle"
+                  onClick={() => setDiagOpen((v) => !v)}
+                >
+                  {diagOpen ? "▾ " : "▸ "}
+                  {t.call.details}
+                </button>
+                {diagOpen && (
+                  <>
+                    <div className="call-diag-body">{diag || "…"}</div>
+                    <button
+                      type="button"
+                      className="call-diag-toggle"
+                      style={{ marginTop: 6 }}
+                      onClick={() => navigator.clipboard?.writeText(diag).catch(() => {})}
+                    >
+                      ⧉ {t.call.copyDetails}
+                    </button>
+                  </>
+                )}
               </div>
             </>
           )}
         </div>
       </motion.div>
+
+      <AnimatePresence>
+        {remoteScreen && (
+          <motion.div
+            className="screen-panel glass-strong"
+            drag
+            dragMomentum={false}
+            dragElastic={0.04}
+            dragListener={false}
+            dragControls={screenDragControls}
+            dragConstraints={{ left: -460, right: 460, top: -300, bottom: 300 }}
+            initial={{ opacity: 0, scale: 0.94 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.94 }}
+            transition={{ type: "spring", stiffness: 300, damping: 28 }}
+          >
+            <div
+              className="screen-head"
+              title={t.call.dragHint}
+              onPointerDown={(e) => screenDragControls.start(e)}
+              onDoubleClick={toggleScreenFullscreen}
+            >
+              <span className="screen-live">live</span>
+              <span className="screen-title">{t.call.screenOf}</span>
+              <div className="screen-head-actions">
+                <button
+                  type="button"
+                  className="screen-btn"
+                  title={screenMinimized ? t.call.expand : t.call.minimize}
+                  aria-label={screenMinimized ? t.call.expand : t.call.minimize}
+                  onClick={() => setScreenMinimized((v) => !v)}
+                >
+                  {screenMinimized ? "▣" : "—"}
+                </button>
+                <button
+                  type="button"
+                  className="screen-btn"
+                  title={t.call.fullscreen}
+                  aria-label={t.call.fullscreen}
+                  onClick={toggleScreenFullscreen}
+                >
+                  ⛶
+                </button>
+              </div>
+            </div>
+
+            {/* Kept mounted while minimized so the video element never loses
+                its stream (re-attaching costs a black frame + a reflow). */}
+            <div
+              className="screen-stage"
+              ref={screenStageRef}
+              style={screenMinimized ? { display: "none" } : undefined}
+            >
+              <video
+                ref={screenVideoRef}
+                autoPlay
+                playsInline
+                onDoubleClick={toggleScreenFullscreen}
+              />
+            </div>
+
+            {!screenMinimized && (
+              <div className="screen-volume" title={t.call.screenVolume}>
+                <span>🔈</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={screenVolume}
+                  onChange={handleScreenVolumeChange}
+                />
+                <span className="screen-volume-value">
+                  {Math.round(screenVolume * 100)}%
+                </span>
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -1796,14 +2345,17 @@ export default function App() {
   // Platform drives window-chrome CSS: macOS keeps the traffic-light inset and
   // the rounded shell; Windows/Linux drop both (the OS draws the frame there, so
   // our own rounding shows black corners and the inset is dead space).
+  const [platform, setPlatform] = useState(guessPlatform);
+
   useEffect(() => {
     Environment()
       .then((env) => {
-        const p = (env?.platform || "").toLowerCase();
-        document.documentElement.setAttribute("data-platform", p || "darwin");
+        const p = (env?.platform || "").toLowerCase() || guessPlatform();
+        setPlatform(p);
+        document.documentElement.setAttribute("data-platform", p);
       })
       .catch(() => {
-        document.documentElement.setAttribute("data-platform", "darwin");
+        document.documentElement.setAttribute("data-platform", guessPlatform());
       });
   }, []);
 
@@ -2476,6 +3028,7 @@ export default function App() {
     return (
       <Onboarding
         t={t}
+        platform={platform}
         theme={theme}
         setTheme={setTheme}
         onDone={(p) => {
@@ -2485,11 +3038,11 @@ export default function App() {
       />
     );
   if (showDisclaimer)
-    return <DisclaimerModal t={t} onDismiss={() => setShowDisclaimer(false)} />;
+    return <DisclaimerModal t={t} platform={platform} onDismiss={() => setShowDisclaimer(false)} />;
 
   return (
     <div className={"app-root " + (isMaximized ? "maximized" : "")}>
-      <div className="titlebar" />
+      <AppTitlebar platform={platform} t={t} />
       <div className="app-shell">
         <Sidebar
           chats={chatsList}

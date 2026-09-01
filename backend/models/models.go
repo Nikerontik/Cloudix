@@ -34,6 +34,11 @@ const (
 	SignalKindReject            = "reject"
 	SignalKindRenegotiateOffer  = "renegotiate-offer"
 	SignalKindRenegotiateAnswer = "renegotiate-answer"
+	// Screen share announces which inbound track ids carry the shared screen,
+	// so the receiver can route them to the dedicated viewer instead of the
+	// camera surface. WebRTC itself carries no such labelling.
+	SignalKindScreenOn  = "screen-on"
+	SignalKindScreenOff = "screen-off"
 )
 
 type Profile struct {
@@ -159,7 +164,9 @@ func IsAllowedSignalKind(kind string) bool {
 		SignalKindEnd,
 		SignalKindReject,
 		SignalKindRenegotiateOffer,
-		SignalKindRenegotiateAnswer:
+		SignalKindRenegotiateAnswer,
+		SignalKindScreenOn,
+		SignalKindScreenOff:
 		return true
 	default:
 		return false

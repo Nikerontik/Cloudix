@@ -10,7 +10,29 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
-## Session state (2026-09-02)
+## Session state (2026-09-03)
+
+- Mac ↔ Windows LAN calls **still fail** after the first mDNS fix. Second pass added:
+  candidate rewriting inside the offer/answer **SDP** (not just trickled ICE), and a live
+  **diagnostics panel** in the call card (ICE/connection states, candidate counts by type,
+  the selected candidate pair) with a copy button. **Ask the user to open it on both sides
+  and paste the output** — that is the fastest way to find the real blocker now.
+- Added: screen sharing, custom Windows title bar (app is frameless on Windows now),
+  sidebar footer height matched to the composer.
+- **Next step (user):** re-test calls + screen share across two machines.
+
+## Screen sharing
+
+`getDisplayMedia` at 1080p60 with `contentHint = "detail"`, `maintain-resolution` and an
+8 Mbps cap. WebRTC carries no notion of "this track is a screen", so the presenter sends a
+`screen-on` signal listing the track ids (`screen-off` on stop). The receiver keeps two
+MediaStreams — camera/voice and screen — and `routeTrack()` moves tracks between them;
+`receivedTracksRef` lets a late `screen-on` reclassify tracks that already arrived. The
+share's audio rides on the screen `<video>` element, which is why its volume slider is
+independent of the call volume. Adding/removing tracks triggers `renegotiate()`
+(`renegotiate-offer` / `renegotiate-answer`).
+
+## Older session state (2026-09-02)
 
 - Two-machine testing found: **Mac ↔ Windows calls on a plain LAN never connected** —
   offer/answer completed (both sides showed "calling") but ICE never did. Root cause:
@@ -111,10 +133,14 @@ machine** (ICE fails — see "Still open"). Real call testing needs two machines
   `THEME_ICON` in `App.jsx`, a `[data-theme="…"]` token block in `theme.css`, and
   `t.theme.<name>`.
 - **Platform chrome:** `<html data-platform>` is set from a UA guess before first paint,
-  then confirmed via Wails `Environment()`. macOS keeps the 38px traffic-light inset and
-  the rounded shell; `windows`/`linux` collapse the inset to 0 and drop `border-radius`
-  (the OS draws the frame — self-rounding leaked black corners). Any window-chrome CSS
-  must be gated on `[data-platform=…]` so macOS is unaffected.
+  then confirmed via Wails `Environment()`; `App` also keeps it in a `platform` state.
+  macOS keeps the native traffic lights (`TitleBarHiddenInset`) and the rounded shell.
+  **Windows runs frameless** (`main.go` sets `Frameless: goruntime.GOOS == "windows"`) and
+  renders `WindowsTitlebar` — our own bar with minimise/maximise/close wired to the Wails
+  runtime. `AppTitlebar` picks the right one and must be used on every root screen
+  (app, onboarding, disclaimer) — a frameless window with no bar cannot be closed.
+  Corners stay square on Windows: the window is opaque, so CSS rounding shows black.
+  Any window-chrome CSS must be gated on `[data-platform=…]` so macOS is unaffected.
 - CSS lives entirely in `frontend/src/styles/theme.css`, driven by custom properties on
   `:root` / `[data-theme]`. Use the tokens (`--panel`, `--border`, `--accent`, `--shadow-*`,
   `--ease`), not literal colors, or a new theme will not pick the change up.
@@ -176,8 +202,13 @@ machine** (ICE fails — see "Still open"). Real call testing needs two machines
 - Pre-existing lockless access to `a.store` / `a.transport` / `a.discovery` across
   goroutines vs `Logout()` nil-assignment. New code snapshots into locals to match the
   existing style; a full fix would need an RWMutex around those fields.
-- **Calls between two instances on one Mac** still may not reach "connected" — the mDNS
-  rewrite fixes the cross-machine case, but two WebViews on one host resolve to the same
-  IP and the loopback path stays flaky. Test calls across two real machines.
+- **Mac ↔ Windows calls still do not connect** (as of 2026-09-03). Signalling completes,
+  ICE does not. Both the trickled-candidate and SDP-level mDNS rewrites are in place, so
+  the next step is data, not more guessing: have the user open the call diagnostics panel
+  on both machines and report `ice-conn`, the candidate counts and the selected pair.
+  Things not yet ruled out: Windows Firewall dropping inbound UDP for the app, the two
+  hosts being on different subnets/VLANs, or WebKit refusing the rewritten candidates.
+- **Calls between two instances on one Mac** may also not reach "connected" — two WebViews
+  on one host resolve to the same IP and the loopback path is flaky. Use two machines.
 - No TURN server, STUN only — peers behind symmetric NAT on different networks won't
   connect. Fine for the LAN/VPN threat model.

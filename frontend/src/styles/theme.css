@@ -289,7 +289,6 @@ button {
   padding: 0 10px 10px 10px;
 }
 
-[data-platform="windows"] .app-shell,
 [data-platform="linux"] .app-shell {
   padding: 10px;
 }
@@ -606,7 +605,8 @@ button {
 
 .sidebar-footer {
   flex-shrink: 0;
-  height: 52px;
+  /* Matches .composer so the two panels' bottom bars share one baseline. */
+  height: 64px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1849,4 +1849,295 @@ button {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+
+/* ------------------------------------------------ windows title bar --- */
+/* Windows is frameless (see main.go); this is our own chrome so the window
+   matches the theme instead of the OS grey. macOS never renders this. */
+
+.win-titlebar {
+  height: 34px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  position: relative;
+  z-index: 6;
+  border-bottom: 1px solid var(--border);
+  background: var(--track);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+}
+
+.win-titlebar-drag {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  --wails-draggable: drag;
+}
+
+.win-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.win-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, var(--accent-2), var(--accent));
+}
+
+.win-controls {
+  display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
+  --wails-draggable: no-drag;
+}
+
+.win-btn {
+  width: 46px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.14s var(--ease-soft), color 0.14s var(--ease-soft);
+}
+
+.win-btn svg {
+  width: 10px;
+  height: 10px;
+}
+
+.win-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.win-btn.close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+/* ------------------------------------------------- screen share view --- */
+
+.screen-panel {
+  pointer-events: auto;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(720px, 78vw);
+  transform: translate(-50%, -50%);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.screen-panel.minimized {
+  width: 260px;
+}
+
+.screen-head {
+  height: 38px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: grab;
+  position: relative;
+  z-index: 3;
+}
+
+.screen-head:active {
+  cursor: grabbing;
+}
+
+.screen-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.screen-live {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--danger);
+  border-radius: 5px;
+  padding: 2px 6px;
+  animation: live-pulse 2s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.screen-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  --wails-draggable: no-drag;
+}
+
+.screen-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.16s var(--ease-soft), color 0.16s var(--ease-soft),
+    transform 0.16s var(--ease);
+}
+
+.screen-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+  transform: scale(1.08);
+}
+
+.screen-btn.danger:hover {
+  background: rgba(255, 59, 48, 0.15);
+  color: var(--danger);
+}
+
+.screen-stage {
+  position: relative;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.screen-stage video {
+  width: 100%;
+  max-height: 62vh;
+  display: block;
+  object-fit: contain;
+  background: #000;
+}
+
+/* Native fullscreen on the stage: fill the display, keep controls reachable. */
+.screen-stage:fullscreen {
+  width: 100vw;
+  height: 100vh;
+}
+
+.screen-stage:fullscreen video {
+  max-height: 100vh;
+  height: 100vh;
+  object-fit: contain;
+}
+
+.screen-volume {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+}
+
+.screen-volume span {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.screen-volume input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+  height: 4px;
+}
+
+.screen-volume .screen-volume-value {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sharing indicator inside the call card */
+.call-sharing-note {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--danger);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.call-btn.sharing {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+}
+
+/* Call diagnostics */
+.call-diag {
+  width: 100%;
+  margin-top: 2px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.call-diag-toggle {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0;
+}
+
+.call-diag-toggle:hover {
+  color: var(--accent);
+}
+
+.call-diag-body {
+  margin-top: 6px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--track);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  max-height: 132px;
+  overflow-y: auto;
+  user-select: text;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
