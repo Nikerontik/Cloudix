@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os/exec"
+	goruntime "runtime"
 	"sync"
 	"time"
 
@@ -17,6 +19,9 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+// appVersion is surfaced in Settings; bump it with user-visible releases.
+const appVersion = "0.2.0"
 
 type App struct {
 	ctx       context.Context
@@ -53,10 +58,46 @@ func (a *App) emitEvent(name string, payload interface{}) {
 	runtime.EventsEmit(a.ctx, name, payload)
 }
 
+// mediaPreview builds the chat-list preview for a message. Media previews are
+// stored as locale-neutral tokens (models.PreviewImage/Video/File) and
+// translated in the frontend — storing a localized string here used to leak
+// Russian text into the English UI.
+func mediaPreview(text, mediaKind string) string {
+	switch mediaKind {
+	case "":
+		return text
+	case "image":
+		return models.PreviewImage
+	case "video":
+		return models.PreviewVideo
+	default:
+		return models.PreviewFile
+	}
+}
+
 func genPeerID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return "P-" + hex.EncodeToString(b)
+}
+
+// peerIP returns the best-known IP for a peer: the address of the live TCP
+// connection first, then whatever discovery last saw. WebViews obfuscate their
+// local ICE host candidates as "<uuid>.local" mDNS names, and macOS WebKit and
+// Windows WebView2 fail to resolve each other's names — so the call layer
+// rewrites those candidates using this address instead.
+func (a *App) peerIP(peerID string) string {
+	if a.transport != nil {
+		if ip := a.transport.RemoteIP(peerID); ip != "" {
+			return ip
+		}
+	}
+	if a.discovery != nil {
+		if peer, ok := a.discovery.GetPeerEvenIfStale(peerID); ok {
+			return peer.IP
+		}
+	}
+	return ""
 }
 
 func (a *App) resolvePeer(peerID string) (models.Peer, bool) {
@@ -458,17 +499,7 @@ func (a *App) SendMessage(peerID, text, mediaKind, mediaData string) (*models.Me
 		return nil, fmt.Errorf("InsertMessage: %w", err)
 	}
 
-	preview := text
-	if mediaKind != "" {
-		switch mediaKind {
-		case "image":
-			preview = "📷 Фото"
-		case "video":
-			preview = "🎥 Видео"
-		default:
-			preview = "📎 Вложение"
-		}
-	}
+	preview := mediaPreview(text, mediaKind)
 	if err := a.store.TouchChatLastMessage(peerID, preview, msg.Timestamp); err != nil && a.ctx != nil {
 		runtime.LogErrorf(a.ctx, "TouchChatLastMessage failed: %v", err)
 	}
@@ -952,17 +983,7 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 			return
 		}
 
-		preview := p.Text
-		if p.MediaKind != "" {
-			switch p.MediaKind {
-			case "image":
-				preview = "📷 Фото"
-			case "video":
-				preview = "🎥 Видео"
-			default:
-				preview = "📎 Вложение"
-			}
-		}
+		preview := mediaPreview(p.Text, p.MediaKind)
 		if err := a.store.TouchChatLastMessage(env.SenderID, preview, p.Timestamp); err != nil && a.ctx != nil {
 			runtime.LogErrorf(a.ctx, "TouchChatLastMessage incoming failed: %v", err)
 		}
@@ -1137,6 +1158,7 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 		}
 		a.emitEvent("signal:incoming", map[string]interface{}{
 			"peerId": env.SenderID,
+			"peerIp": a.peerIP(env.SenderID),
 			"callId": p.CallID,
 			"kind":   p.Kind,
 			"data":   p.Data,
@@ -1156,6 +1178,35 @@ func mustMarshalTyping(p models.TypingPayload) string {
 		return `{"isTyping":false}`
 	}
 	return string(b)
+}
+
+// AppVersion is shown in Settings so a user can tell at a glance which build
+// they're running (stale side-by-side installs are otherwise invisible).
+func (a *App) AppVersion() string { return appVersion }
+
+// GetDataDir returns the folder holding the local profile/chat database.
+func (a *App) GetDataDir() string { return storage.DataDir() }
+
+// OpenDataFolder reveals the local data folder in the OS file manager.
+func (a *App) OpenDataFolder() error {
+	dir := storage.DataDir()
+
+	var cmd *exec.Cmd
+	switch goruntime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", dir)
+	case "windows":
+		cmd = exec.Command("explorer.exe", dir)
+	default:
+		cmd = exec.Command("xdg-open", dir)
+	}
+
+	// explorer.exe exits with a non-zero status even when it succeeds.
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("open %s: %w", dir, err)
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 func (a *App) RestartNetworking() error {

@@ -18,10 +18,10 @@ func main() {
 
 	err := wails.Run(&options.App{
 		Title:            "Cloudix",
-		Width:            1180,
-		Height:           760,
-		MinWidth:         900,
-		MinHeight:        600,
+		Width:            1340,
+		Height:           880,
+		MinWidth:         980,
+		MinHeight:        650,
 		Frameless:        false,
 		BackgroundColour: &options.RGBA{R: 0, G: 0, B: 0, A: 0},
 		Assets:           assets,

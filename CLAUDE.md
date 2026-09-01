@@ -10,15 +10,26 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
-## Session state (2026-09-01)
+## Session state (2026-09-02)
 
-- Audit + fixes done and pushed to `dev` (`122fd83`, `2850e54`). Working tree clean.
-- **Next step (user):** test the app on **two separate machines** on the same LAN /
-  RadminVPN — messages, media, reactions, read receipts, typing, and especially **calls**
-  (calls don't complete between two instances on one Mac — see "Still open").
-- If asked to help debug a two-machine session: a `wails build -debug` build enables
-  devtools (right-click → Inspect) to read `iceConnectionState` / console logs.
-- Nothing half-finished in the code; the "Still open" list is deliberate deferrals.
+- Two-machine testing found: **Mac ↔ Windows calls on a plain LAN never connected** —
+  offer/answer completed (both sides showed "calling") but ICE never did. Root cause:
+  WebViews publish host ICE candidates as `<uuid>.local` **mDNS** names, and macOS WebKit
+  and Windows WebView2 can't resolve each other's names. Windows ↔ Windows worked because
+  both run the same resolver. **Fixed** by rewriting inbound `.local` candidates with the
+  peer's real IP (see "Call ICE" below).
+- Also in this pass: liquid-glass redesign, pink theme, platform-aware window chrome,
+  emoji picker, draggable non-blocking call window, data-folder/version surfacing.
+- **Next step (user):** re-test Mac ↔ Windows and Windows ↔ Windows (RadminVPN) calls.
+
+## Call ICE (why calls used to fail cross-platform)
+
+`app.peerIP(peerID)` resolves a peer's real address — live TCP connection first
+(`transport.RemoteIP`), then discovery. Every `signal:incoming` event carries it as
+`peerIp`. In `CallModal`, `rewriteMdnsCandidate()` swaps the `.local` hostname in field 4
+of an inbound ICE candidate for that IP before `addIceCandidate`. Both peers do this, so
+each side ends up with a directly usable host candidate. Keep `peerIpRef` fed from every
+signal — don't rely on the seed from discovery alone.
 
 ## Stack
 
@@ -91,6 +102,22 @@ machine** (ICE fails — see "Still open"). Real call testing needs two machines
   message) retries `ListAllUndelivered` rows only when the peer is live / has an open conn.
 - Reactions: `reaction` = mine, `reaction_peer` = theirs. `SetMessageReaction(id, emoji, mine)`.
 - New user-facing strings must go through `t.*` in `i18n.js` (both `ru` and `en`).
+  **Never store a localized string in the DB** — chat-list media previews are
+  locale-neutral tokens (`models.PreviewImage/Video/File`) rendered via
+  `previewText(raw, t)`. That was a real bug: Russian previews leaked into the English UI.
+- **Themes:** `dark` (default) · `light` · `pink` (pastel, light-only), cycled by
+  `ThemeButton` and stamped on `<html data-theme>`. Theme + language persist in
+  `localStorage` (`cloudix:theme`, `cloudix:lang`). Adding a theme = add to `THEMES` +
+  `THEME_ICON` in `App.jsx`, a `[data-theme="…"]` token block in `theme.css`, and
+  `t.theme.<name>`.
+- **Platform chrome:** `<html data-platform>` is set from a UA guess before first paint,
+  then confirmed via Wails `Environment()`. macOS keeps the 38px traffic-light inset and
+  the rounded shell; `windows`/`linux` collapse the inset to 0 and drop `border-radius`
+  (the OS draws the frame — self-rounding leaked black corners). Any window-chrome CSS
+  must be gated on `[data-platform=…]` so macOS is unaffected.
+- CSS lives entirely in `frontend/src/styles/theme.css`, driven by custom properties on
+  `:root` / `[data-theme]`. Use the tokens (`--panel`, `--border`, `--accent`, `--shadow-*`,
+  `--ease`), not literal colors, or a new theme will not pick the change up.
 - Comments in the code marked `FIX:` / `NEW:` document past bug fixes — leave them.
 - Don't commit build artifacts. `/cloudix` and `/cloudix.exe` are gitignored.
 
@@ -121,6 +148,21 @@ machine** (ICE fails — see "Still open"). Real call testing needs two machines
 17. `discovery.UDPPort` const used in `app.go` instead of the `"47990"` literal.
 18. Connection badge driven by `NetworkReady()`; `initNetworking` failure shows "disconnected".
 
+## Fixed in the 2026-09-02 UX pass
+
+- **Cross-platform calls**: mDNS ICE candidate rewrite (see "Call ICE" above).
+- **i18n leak**: media previews are locale-neutral tokens now, not stored Russian strings.
+- Liquid-glass redesign of `theme.css` (token-driven, 3 themes, aurora backdrop, springy
+  motion throughout).
+- Windows chrome: no self-rounding (black corners), no dead 38px mac inset.
+- Emoji picker in the composer; `ThemeButton` in the sidebar brand row and onboarding.
+- Call window is draggable (`useDragControls` on a handle) and no longer blocks the app —
+  `.call-overlay` is `pointer-events: none`, only the card is interactive.
+- Sidebar footer: compact Settings + GitHub button, fixed 52px height.
+- Settings shows `AppVersion()` and `GetDataDir()` with an `OpenDataFolder()` button, so a
+  stale side-by-side install is visible instead of silently confusing.
+- Default window 1340×880 (was 1180×760).
+
 ## Still open (deferred, by design or scope)
 
 - **5. No sender authentication.** `env.SenderID` is still an unverified string — a
@@ -134,8 +176,8 @@ machine** (ICE fails — see "Still open"). Real call testing needs two machines
 - Pre-existing lockless access to `a.store` / `a.transport` / `a.discovery` across
   goroutines vs `Logout()` nil-assignment. New code snapshots into locals to match the
   existing style; a full fix would need an RWMutex around those fields.
-- **Calls between two instances on one Mac don't reach "connected"** (offer/answer
-  exchange completes — both show "calling" — but ICE connectivity check fails). Suspected
-  cause: WebKit obfuscates host candidates as `*.local` mDNS names and the same-host
-  loopback path for those is flaky. Needs verification across two real machines; consider
-  a `wails build -debug` build to read `iceConnectionState` in devtools.
+- **Calls between two instances on one Mac** still may not reach "connected" — the mDNS
+  rewrite fixes the cross-machine case, but two WebViews on one host resolve to the same
+  IP and the loopback path stays flaky. Test calls across two real machines.
+- No TURN server, STUN only — peers behind symmetric NAT on different networks won't
+  connect. Fine for the LAN/VPN threat model.

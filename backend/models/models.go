@@ -17,6 +17,15 @@ const (
 	EnvelopeTypePong           = "pong"
 )
 
+// Locale-neutral chat-list previews for media messages. The frontend maps these
+// to `t.mediaPreview.*`; storing a localized string in the DB used to leak
+// Russian text into the English UI.
+const (
+	PreviewImage = "[[image]]"
+	PreviewVideo = "[[video]]"
+	PreviewFile  = "[[file]]"
+)
+
 const (
 	SignalKindOffer             = "offer"
 	SignalKindAnswer            = "answer"

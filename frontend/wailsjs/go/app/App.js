@@ -6,6 +6,10 @@ export function AddManualPeer(arg1) {
   return window['go']['app']['App']['AddManualPeer'](arg1);
 }
 
+export function AppVersion() {
+  return window['go']['app']['App']['AppVersion']();
+}
+
 export function BlockPeer(arg1) {
   return window['go']['app']['App']['BlockPeer'](arg1);
 }
@@ -20,6 +24,10 @@ export function DeleteMessage(arg1, arg2, arg3) {
 
 export function GetChats() {
   return window['go']['app']['App']['GetChats']();
+}
+
+export function GetDataDir() {
+  return window['go']['app']['App']['GetDataDir']();
 }
 
 export function GetMessages(arg1) {
@@ -48,6 +56,10 @@ export function MarkChatRead(arg1) {
 
 export function NetworkReady() {
   return window['go']['app']['App']['NetworkReady']();
+}
+
+export function OpenDataFolder() {
+  return window['go']['app']['App']['OpenDataFolder']();
 }
 
 export function ReactToMessage(arg1, arg2, arg3) {

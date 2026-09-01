@@ -1,12 +1,12 @@
 const dict = {
   ru: {
+    appName: "Cloudix",
     searchPlaceholder: "Поиск",
     settingsBtn: "Настройки",
+    githubBtn: "GitHub",
     online: "в сети",
     offline: "не в сети",
     typing: "печатает…",
-    group: "Группа",
-    channel: "Канал",
     savedNotes: "Избранное",
     foundInNetwork: "найден в сети",
     accountDeletedTag: "аккаунт удалён",
@@ -18,12 +18,21 @@ const dict = {
     pickChatHint: 'Выберите чат или найдите собеседника во вкладке "В сети"',
     openChatError: "Не удалось открыть чат: ",
     attachTooLarge: "Файл слишком большой. Максимум 25 МБ.",
+    emojiTitle: "Эмодзи",
+    mediaPreview: {
+      image: "📷 Фото",
+      video: "🎥 Видео",
+      file: "📎 Вложение",
+    },
+    theme: {
+      toggle: "Сменить тему",
+      dark: "Тёмная",
+      light: "Светлая",
+      pink: "Розовая",
+    },
     tabs: {
       all: "Все",
       online: "В сети",
-      groups: "Группы",
-      channels: "Каналы",
-      saved: "Избранное",
     },
     connStatus: {
       connected: "Подключено",
@@ -61,15 +70,16 @@ const dict = {
     call: {
       incoming: "Входящий звонок…",
       calling: "Вызов…",
+      connecting: "Соединение…",
       reconnecting: "Переподключение…",
-      video: "Видео",
-      screen: "Экран",
       mute: "Выключить звук",
       unmute: "Включить звук",
       end: "Завершить",
+      minimize: "Свернуть",
+      dragHint: "Перетащите окно за заголовок",
       zoomHint: "Двойной клик — увеличить/уменьшить",
       errMedia:
-        "Не удалось получить доступ к микрофону/камере. Проверь разрешения ОС для приложения.",
+        "Не удалось получить доступ к микрофону/камере. Проверьте разрешения ОС для приложения.",
       errSignalSend: "Не удалось отправить сигнал собеседнику. Проверьте сеть/VPN.",
       errConnect:
         "Не удалось соединиться с собеседником. Проверьте сеть/VPN и повторите попытку.",
@@ -80,8 +90,6 @@ const dict = {
       title: "Настройки",
       appearance: "Внешний вид",
       theme: "Тема",
-      light: "Светлая",
-      dark: "Тёмная",
       language: "Язык",
       connection: "Подключение",
       profile: "Профиль",
@@ -89,6 +97,10 @@ const dict = {
       nickname: "Никнейм",
       bio: "О себе",
       peerId: "Peer ID",
+      about: "О приложении",
+      version: "Версия",
+      dataFolder: "Папка с данными",
+      openFolder: "Открыть",
       dangerZone: "Опасная зона",
       logoutHint: "Удалить локальный профиль и выйти",
       logout: "Выйти",
@@ -113,13 +125,13 @@ const dict = {
     },
   },
   en: {
+    appName: "Cloudix",
     searchPlaceholder: "Search",
     settingsBtn: "Settings",
+    githubBtn: "GitHub",
     online: "online",
     offline: "offline",
     typing: "typing…",
-    group: "Group",
-    channel: "Channel",
     savedNotes: "Saved",
     foundInNetwork: "found on network",
     accountDeletedTag: "account deleted",
@@ -131,12 +143,21 @@ const dict = {
     pickChatHint: 'Pick a chat or find someone on the "Online" tab',
     openChatError: "Could not open chat: ",
     attachTooLarge: "File is too large. Maximum 25 MB.",
+    emojiTitle: "Emoji",
+    mediaPreview: {
+      image: "📷 Photo",
+      video: "🎥 Video",
+      file: "📎 Attachment",
+    },
+    theme: {
+      toggle: "Switch theme",
+      dark: "Dark",
+      light: "Light",
+      pink: "Pink",
+    },
     tabs: {
       all: "All",
       online: "Online",
-      groups: "Groups",
-      channels: "Channels",
-      saved: "Saved",
     },
     connStatus: {
       connected: "Connected",
@@ -174,12 +195,13 @@ const dict = {
     call: {
       incoming: "Incoming call…",
       calling: "Calling…",
+      connecting: "Connecting…",
       reconnecting: "Reconnecting…",
-      video: "Video",
-      screen: "Screen",
       mute: "Mute",
       unmute: "Unmute",
       end: "End",
+      minimize: "Minimize",
+      dragHint: "Drag the window by its header",
       zoomHint: "Double-click to zoom in/out",
       errMedia:
         "Could not access the microphone/camera. Check the OS permissions for the app.",
@@ -192,8 +214,6 @@ const dict = {
       title: "Settings",
       appearance: "Appearance",
       theme: "Theme",
-      light: "Light",
-      dark: "Dark",
       language: "Language",
       connection: "Connection",
       profile: "Profile",
@@ -201,6 +221,10 @@ const dict = {
       nickname: "Nickname",
       bio: "About",
       peerId: "Peer ID",
+      about: "About the app",
+      version: "Version",
+      dataFolder: "Data folder",
+      openFolder: "Open",
       dangerZone: "Danger zone",
       logoutHint: "Delete local profile and sign out",
       logout: "Logout",
@@ -225,6 +249,22 @@ const dict = {
     },
   },
 };
+
+// Backend stores media previews as locale-neutral tokens; legacy rows may still
+// hold the old Russian literals, so map those too.
+const PREVIEW_TOKENS = {
+  "[[image]]": "image",
+  "[[video]]": "video",
+  "[[file]]": "file",
+  "📷 Фото": "image",
+  "🎥 Видео": "video",
+  "📎 Вложение": "file",
+};
+
+export function previewText(raw, t) {
+  const key = PREVIEW_TOKENS[raw];
+  return key ? t.mediaPreview[key] : raw;
+}
 
 export function useT(lang = "ru") {
   return dict[lang] || dict.ru;

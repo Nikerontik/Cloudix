@@ -1,17 +1,83 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { useT } from "./i18n";
+import { motion, AnimatePresence, useDragControls } from "framer-motion";
+import { useT, previewText } from "./i18n";
 import * as WailsApp from "../wailsjs/go/app/App";
-import { EventsOn, WindowIsMaximised } from "../wailsjs/runtime/runtime";
+import { EventsOn, Environment, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 
 const REACTIONS = ["👍", "❤️", "🔥", "😂", "👎"];
 const SAVED_CHAT_ID = "__saved__";
+const GITHUB_URL = "https://github.com/Nikerontik/Cloudix";
 const savedStorageKey = (peerId) => "cloudix:saved-messages:" + (peerId || "anon");
 // Keep in sync with transport.maxLineBytes on the Go side (base64 inflates ~33%).
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
+// dark -> light -> pink -> dark. "pink" is a light-only pastel theme.
+const THEMES = ["dark", "light", "pink"];
+const THEME_ICON = { dark: "🌙", light: "☀️", pink: "🌸" };
+const nextTheme = (current) =>
+  THEMES[(THEMES.indexOf(current) + 1 + THEMES.length) % THEMES.length];
+
+const EMOJIS = [
+  "😀", "😂", "🥲", "😊", "😍", "🤔", "😎", "🙃",
+  "😴", "🤯", "😭", "😡", "🥳", "🤝", "🙏", "👏",
+  "👍", "👎", "❤️", "🔥", "✨", "🎉", "💯", "👀",
+  "🚀", "☕", "🍕", "🎮", "🎧", "💻", "📎", "✅",
+];
+
 const sortByTs = (arr) =>
   [...arr].sort((a, b) => (a?.ts || 0) - (b?.ts || 0));
+
+// Guess the platform before first paint so Windows never flashes the macOS
+// window chrome; Environment() confirms it right after mount.
+function guessPlatform() {
+  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  if (/windows|win32|win64/i.test(ua)) return "windows";
+  if (/linux|x11/i.test(ua) && !/android/i.test(ua)) return "linux";
+  return "darwin";
+}
+
+if (typeof document !== "undefined") {
+  document.documentElement.setAttribute("data-platform", guessPlatform());
+}
+
+// WebViews hide local IPs behind "<uuid>.local" mDNS ICE candidates. macOS
+// WebKit and Windows WebView2 fail to resolve each other's names, so a
+// Mac<->Windows LAN call gathers candidates but never connects. We already know
+// the peer's real address from the TCP transport, so swap it in.
+function rewriteMdnsCandidate(init, peerIp) {
+  if (!peerIp || !init || typeof init.candidate !== "string") return init;
+  const parts = init.candidate.split(" ");
+  // candidate:<foundation> <component> <proto> <priority> <address> <port> typ ...
+  if (parts.length < 6 || !/\.local$/i.test(parts[4])) return init;
+  parts[4] = peerIp;
+  return { ...init, candidate: parts.join(" ") };
+}
+
+function ThemeButton({ theme, setTheme, t, className = "" }) {
+  return (
+    <motion.button
+      type="button"
+      className={"icon-btn " + className}
+      title={t.theme.toggle + " · " + t.theme[theme]}
+      aria-label={t.theme.toggle}
+      onClick={() => setTheme(nextTheme(theme))}
+      whileTap={{ scale: 0.86, rotate: -18 }}
+    >
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.span
+          key={theme}
+          initial={{ opacity: 0, rotate: -70, scale: 0.5 }}
+          animate={{ opacity: 1, rotate: 0, scale: 1 }}
+          exit={{ opacity: 0, rotate: 70, scale: 0.5 }}
+          transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+          style={{ display: "block", lineHeight: 1 }}
+        >
+          {THEME_ICON[theme]}
+        </motion.span>
+      </AnimatePresence>
+    </motion.button>
+  );
+}
 
 function Avatar({ name, avatar, size = "", onClick, online }) {
   return (
@@ -28,7 +94,7 @@ function Avatar({ name, avatar, size = "", onClick, online }) {
   );
 }
 
-function Onboarding({ onDone, t }) {
+function Onboarding({ onDone, t, theme, setTheme }) {
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
   const [bio, setBio] = useState("");
@@ -71,6 +137,9 @@ function Onboarding({ onDone, t }) {
   return (
     <div className="onboarding-root">
       <div className="onboarding-titlebar" />
+      <div className="onboarding-theme">
+        <ThemeButton theme={theme} setTheme={setTheme} t={t} />
+      </div>
       <motion.div
         className="onboarding-card"
         initial={{ opacity: 0, y: 24, scale: 0.96 }}
@@ -206,6 +275,8 @@ function Sidebar({
   setSearch,
   onStartChatWithPeer,
   typingByPeer,
+  theme,
+  setTheme,
 }) {
   // FIX: убраны вкладки "groups"/"channels" по запросу — они никогда не были
   // реализованы и только занимали место. "saved" тоже убрана как отдельная
@@ -223,6 +294,13 @@ function Sidebar({
 
   return (
     <div className="sidebar glass">
+      {/* Brand row sits below the mac traffic-light inset, so it never overlaps
+          the window controls. */}
+      <div className="sidebar-brand">
+        <span className="brand-title">{t.appName}</span>
+        <ThemeButton theme={theme} setTheme={setTheme} t={t} />
+      </div>
+
       <div className="sidebar-header">
         <Avatar
           name={myProfile?.name}
@@ -326,7 +404,11 @@ function Sidebar({
                     )}
                   </div>
                   <div className={"chat-preview " + (isTyping ? "typing-preview" : "")}>
-                    {isTyping ? t.typing : c.preview || t.chatPreviewEmpty}
+                    {isTyping
+                      ? t.typing
+                      : c.preview
+                        ? previewText(c.preview, t)
+                        : t.chatPreviewEmpty}
                   </div>
                 </div>
                 {c.unread > 0 && (
@@ -339,13 +421,19 @@ function Sidebar({
       )}
 
       <div className="sidebar-footer">
+        <button type="button" className="footer-btn" onClick={onOpenSettings}>
+          ⚙ {t.settingsBtn}
+        </button>
         <button
           type="button"
-          className="theme-toggle"
-          onClick={onOpenSettings}
-          style={{ width: "100%" }}
+          className="footer-btn icon-only"
+          title={t.githubBtn}
+          aria-label={t.githubBtn}
+          onClick={() => BrowserOpenURL(GITHUB_URL)}
         >
-          ⚙ {t.settingsBtn}
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+          </svg>
         </button>
       </div>
     </div>
@@ -468,6 +556,7 @@ function CallModal({
   const [remoteZoomed, setRemoteZoomed] = useState(false);
   const [remoteVolume, setRemoteVolume] = useState(1);
   const remoteVolumeRef = useRef(1);
+  const dragControls = useDragControls();
 
   const handleVolumeChange = (e) => {
     const v = parseFloat(e.target.value);
@@ -492,6 +581,14 @@ function CallModal({
   const closedRef = useRef(false);
   const localVideoSenderRef = useRef(null);
   const disconnectTimerRef = useRef(null);
+  // Best-known real IP of the peer, used to de-obfuscate their mDNS ICE
+  // candidates. Seeded from discovery, refreshed from every incoming signal.
+  const peerIpRef = useRef(target.ip || "");
+
+  const addRemoteCandidate = async (pc, raw) => {
+    const init = rewriteMdnsCandidate(JSON.parse(raw), peerIpRef.current);
+    await pc.addIceCandidate(init);
+  };
 
   const drainPendingIce = async () => {
     const pc = pcRef.current;
@@ -500,7 +597,7 @@ function CallModal({
     pendingIceRef.current = [];
     for (const cand of queued) {
       try {
-        await pc.addIceCandidate(JSON.parse(cand));
+        await addRemoteCandidate(pc, cand);
       } catch (err) {
         console.warn("drainPendingIce addIceCandidate failed", err);
       }
@@ -780,6 +877,9 @@ function CallModal({
   const handleSignal = async (payload) => {
     if (payload.callId !== callId || closedRef.current) return;
 
+    // The backend stamps every inbound signal with the peer's real address.
+    if (payload.peerIp) peerIpRef.current = payload.peerIp;
+
     // FIX: асинхронная ошибка отправки сигнала (SendSignal теперь
     // выполняет реальную сетевую отправку в горутине на Go-стороне и
     // возвращается немедленно; если отправка всё же не удалась —
@@ -816,7 +916,7 @@ function CallModal({
       } else if (payload.kind === "ice") {
         if (pc.remoteDescription) {
           try {
-            await pc.addIceCandidate(JSON.parse(payload.data));
+            await addRemoteCandidate(pc, payload.data);
           } catch (err) {
             console.warn("addIceCandidate failed", err);
           }
@@ -930,18 +1030,29 @@ function CallModal({
   const showSelfVideoLayer = video;
 
   return (
-    <motion.div
-      className="call-overlay"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-    >
+    // The overlay is a pass-through layer (pointer-events: none in CSS) so the
+    // messenger stays usable while a call is up; only the card is interactive
+    // and it can be dragged anywhere in the window by its handle.
+    <div className="call-overlay">
       <motion.div
-        className="call-card"
-        initial={{ scale: 0.9, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        exit={{ scale: 0.9, opacity: 0 }}
+        className="call-card glass-strong"
+        drag
+        dragMomentum={false}
+        dragElastic={0.04}
+        dragListener={false}
+        dragControls={dragControls}
+        dragConstraints={{ left: -420, right: 420, top: -260, bottom: 260 }}
+        initial={{ scale: 0.9, opacity: 0, y: 12 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.92, opacity: 0, y: 8 }}
+        transition={{ type: "spring", stiffness: 320, damping: 28 }}
       >
+        <div
+          className="call-drag"
+          title={t.call.dragHint}
+          onPointerDown={(e) => dragControls.start(e)}
+        />
+
         <audio ref={remoteAudioRef} autoPlay playsInline />
 
         {showRemoteVideoLayer && (
@@ -959,56 +1070,58 @@ function CallModal({
           <video ref={localVideoRef} autoPlay playsInline muted className="call-self-video" />
         )}
 
-        <Avatar name={target.title || target.name} avatar={target.avatar} size="lg" />
-        <div className="call-name">{target.title || target.name || target.peerId}</div>
-        <div className="call-status">
-          {errorText
-            ? errorText
-            : phase === "ringing"
-              ? t.call.incoming
-              : phase === "calling"
-                ? t.call.calling
-                : fmt(seconds)}
-        </div>
-
-        {phase === "ringing" ? (
-          <div className="call-actions">
-            <button type="button" className="call-btn accept" onClick={acceptCall}>
-              ✓
-            </button>
-            <button type="button" className="call-btn end" onClick={declineCall}>
-              ✕
-            </button>
+        <div className="call-body">
+          <Avatar name={target.title || target.name} avatar={target.avatar} size="lg" />
+          <div className="call-name">{target.title || target.name || target.peerId}</div>
+          <div className="call-status">
+            {errorText
+              ? errorText
+              : phase === "ringing"
+                ? t.call.incoming
+                : phase === "calling"
+                  ? t.call.calling
+                  : fmt(seconds)}
           </div>
-        ) : (
-          <>
+
+          {phase === "ringing" ? (
             <div className="call-actions">
-              <button type="button" className="call-btn" onClick={toggleMute}>
-                {muted ? "🔇" : "🎙"}
+              <button type="button" className="call-btn accept" onClick={acceptCall}>
+                ✓
               </button>
-              <button type="button" className="call-btn end" onClick={endCall}>
+              <button type="button" className="call-btn end" onClick={declineCall}>
+                ✕
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="call-actions">
+                <button type="button" className="call-btn" onClick={toggleMute}>
+                  {muted ? "🔇" : "🎙"}
+                </button>
+                <button type="button" className="call-btn end" onClick={endCall}>
                   ✕
-              </button>
-            </div>
-            <div className="call-volume">
-              <span>🔊</span>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={remoteVolume}
-                onChange={handleVolumeChange}
-              />
-            </div>
-            <div className="call-labels">
-              <span>{muted ? t.call.unmute : t.call.mute}</span>
-              <span>{t.call.end}</span>
-            </div>
-          </>
-        )}
+                </button>
+              </div>
+              <div className="call-volume">
+                <span>🔊</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={remoteVolume}
+                  onChange={handleVolumeChange}
+                />
+              </div>
+              <div className="call-labels">
+                <span>{muted ? t.call.unmute : t.call.mute}</span>
+                <span>{t.call.end}</span>
+              </div>
+            </>
+          )}
+        </div>
       </motion.div>
-    </motion.div>
+    </div>
   );
 }
 
@@ -1145,8 +1258,10 @@ function ChatWindow({
   t,
 }) {
   const [text, setText] = useState("");
+  const [emojiOpen, setEmojiOpen] = useState(false);
   const fileRef = useRef(null);
   const scrollRef = useRef(null);
+  const inputRef = useRef(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
@@ -1162,11 +1277,29 @@ function ChatWindow({
   // сбрасываем локальный "я печатаю" при смене чата
   useEffect(() => {
     setText("");
+    setEmojiOpen(false);
     return () => {
       if (onTyping) onTyping(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat?.id]);
+
+  // Закрываем панель эмодзи по клику вне её и по Escape.
+  useEffect(() => {
+    if (!emojiOpen) return;
+    const onDown = (e) => {
+      if (!e.target.closest?.(".emoji-popover") && !e.target.closest?.(".emoji-btn")) {
+        setEmojiOpen(false);
+      }
+    };
+    const onKey = (e) => e.key === "Escape" && setEmojiOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [emojiOpen]);
 
   if (!chat) {
     return (
@@ -1189,6 +1322,25 @@ function ChatWindow({
     const value = e.target.value;
     setText(value);
     if (onTyping) onTyping(value.trim().length > 0);
+  };
+
+  const insertEmoji = (emoji) => {
+    const input = inputRef.current;
+    const next =
+      input && typeof input.selectionStart === "number"
+        ? text.slice(0, input.selectionStart) + emoji + text.slice(input.selectionEnd)
+        : text + emoji;
+    const caret =
+      input && typeof input.selectionStart === "number"
+        ? input.selectionStart + emoji.length
+        : next.length;
+
+    setText(next);
+    if (onTyping) onTyping(next.trim().length > 0);
+    requestAnimationFrame(() => {
+      input?.focus();
+      input?.setSelectionRange?.(caret, caret);
+    });
   };
 
   const attach = (e) => {
@@ -1279,7 +1431,43 @@ function ChatWindow({
             >
               📎
             </button>
+            <button
+              type="button"
+              className={"emoji-btn " + (emojiOpen ? "open" : "")}
+              title={t.emojiTitle}
+              aria-label={t.emojiTitle}
+              onClick={() => setEmojiOpen((v) => !v)}
+            >
+              🙂
+            </button>
+
+            <AnimatePresence>
+              {emojiOpen && (
+                <motion.div
+                  className="emoji-popover glass-strong"
+                  initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 8, scale: 0.96 }}
+                  transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  <div className="emoji-popover-title">{t.emojiTitle}</div>
+                  <div className="emoji-grid">
+                    {EMOJIS.map((emoji) => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        onClick={() => insertEmoji(emoji)}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             <input
+              ref={inputRef}
               type="text"
               placeholder={t.composerPlaceholder}
               value={text}
@@ -1313,6 +1501,14 @@ function SettingsPanel({
   onLogout,
   t,
 }) {
+  const [version, setVersion] = useState("");
+  const [dataDir, setDataDir] = useState("");
+
+  useEffect(() => {
+    WailsApp.AppVersion().then(setVersion).catch(() => {});
+    WailsApp.GetDataDir().then(setDataDir).catch(() => {});
+  }, []);
+
   const save = async (updated) => {
     setProfile(updated);
     try {
@@ -1332,13 +1528,13 @@ function SettingsPanel({
       <div className="settings-group-title">{t.settings.appearance}</div>
       <div className="settings-row">
         <label>{t.settings.theme}</label>
-        <button
-          type="button"
-          className="theme-toggle"
-          onClick={() => setTheme(theme === "light" ? "dark" : "light")}
-        >
-          {theme === "light" ? "☀ " + t.settings.light : "🌙 " + t.settings.dark}
-        </button>
+        <select value={theme} onChange={(e) => setTheme(e.target.value)}>
+          {THEMES.map((name) => (
+            <option key={name} value={name}>
+              {THEME_ICON[name] + "  " + t.theme[name]}
+            </option>
+          ))}
+        </select>
       </div>
       <div className="settings-row">
         <label>{t.settings.language}</label>
@@ -1380,6 +1576,28 @@ function SettingsPanel({
       <div className="settings-row">
         <label>{t.settings.peerId}</label>
         <span className="peer-id-value">{profile.peerId}</span>
+      </div>
+
+      {/* Version + data folder make it obvious which build is running and where
+          its local database lives (stale side-by-side installs are otherwise
+          invisible). */}
+      <div className="settings-group-title">{t.settings.about}</div>
+      <div className="settings-row">
+        <label>{t.settings.version}</label>
+        <span className="peer-id-value">{version || "…"}</span>
+      </div>
+      <div className="settings-row">
+        <label>{t.settings.dataFolder}</label>
+        <span className="settings-value" title={dataDir}>
+          {dataDir || "…"}
+        </span>
+        <button
+          type="button"
+          className="theme-toggle"
+          onClick={() => WailsApp.OpenDataFolder().catch(() => {})}
+        >
+          📂 {t.settings.openFolder}
+        </button>
       </div>
 
       <div className="settings-group-title">{t.settings.dangerZone}</div>
@@ -1549,10 +1767,45 @@ function ProfilePanel({
   );
 }
 
+const readStored = (key, fallback, allowed) => {
+  try {
+    const v = localStorage.getItem(key);
+    return v && (!allowed || allowed.includes(v)) ? v : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
 export default function App() {
-  const [theme, setTheme] = useState("dark");
-  const [lang, setLang] = useState("ru");
+  const [theme, setTheme] = useState(() => readStored("cloudix:theme", "dark", THEMES));
+  const [lang, setLang] = useState(() => readStored("cloudix:lang", "ru", ["ru", "en"]));
   const [isMaximized, setIsMaximized] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("cloudix:theme", theme);
+    } catch {}
+  }, [theme]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("cloudix:lang", lang);
+    } catch {}
+  }, [lang]);
+
+  // Platform drives window-chrome CSS: macOS keeps the traffic-light inset and
+  // the rounded shell; Windows/Linux drop both (the OS draws the frame there, so
+  // our own rounding shows black corners and the inset is dead space).
+  useEffect(() => {
+    Environment()
+      .then((env) => {
+        const p = (env?.platform || "").toLowerCase();
+        document.documentElement.setAttribute("data-platform", p || "darwin");
+      })
+      .catch(() => {
+        document.documentElement.setAttribute("data-platform", "darwin");
+      });
+  }, []);
 
   useEffect(() => {
     const checkMaximized = () => {
@@ -1865,6 +2118,7 @@ export default function App() {
               name: knownChat?.name || knownPeer?.name || payload.peerId,
               title: knownChat?.name || knownPeer?.name || payload.peerId,
               avatar: knownChat?.avatar || knownPeer?.avatar || "",
+              ip: payload.peerIp || knownPeer?.ip || "",
             },
             video: payload.video === true,
             isCaller: false,
@@ -2121,12 +2375,15 @@ export default function App() {
     if (callState) return;
 
     const callId = "call-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+    const knownPeer = onlinePeersRawRef.current.find((p) => p.peerId === target.peerId);
     setCallState({
       target: {
         peerId: target.peerId,
         name: target.name || target.title || target.peerId,
         title: target.title || target.name || target.peerId,
         avatar: target.avatar || "",
+        // Seed for the mDNS ICE-candidate rewrite; refreshed from each signal.
+        ip: knownPeer?.ip || "",
       },
       video,
       isCaller: true,
@@ -2219,6 +2476,8 @@ export default function App() {
     return (
       <Onboarding
         t={t}
+        theme={theme}
+        setTheme={setTheme}
         onDone={(p) => {
           setProfileState(p);
           setShowDisclaimer(true);
@@ -2250,6 +2509,8 @@ export default function App() {
           setSearch={setSearch}
           onStartChatWithPeer={startChatWithPeer}
           typingByPeer={typingByPeer}
+          theme={theme}
+          setTheme={setTheme}
         />
 
         {showSettings ? (

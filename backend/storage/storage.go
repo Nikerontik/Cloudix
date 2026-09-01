@@ -17,7 +17,9 @@ type Store struct {
 	path string
 }
 
-func dbPath() string {
+// DataDir is where the profile/chat database lives. Override the app-name
+// suffix with CLOUDIX_INSTANCE to run a second instance side by side.
+func DataDir() string {
 	dir, _ := os.UserConfigDir()
 	appName := "Cloudix"
 	if suffix := os.Getenv("CLOUDIX_INSTANCE"); suffix != "" {
@@ -25,7 +27,11 @@ func dbPath() string {
 	}
 	appDir := filepath.Join(dir, appName)
 	_ = os.MkdirAll(appDir, 0755)
-	return filepath.Join(appDir, "cloudix.db")
+	return appDir
+}
+
+func dbPath() string {
+	return filepath.Join(DataDir(), "cloudix.db")
 }
 
 func Open() (*Store, error) {

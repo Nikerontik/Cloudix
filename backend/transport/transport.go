@@ -167,6 +167,26 @@ func (m *Manager) HasConn(peerID string) bool {
 	return ok
 }
 
+// RemoteIP returns the IP of the open connection to peerID, if any. This is the
+// most trustworthy address we have for a peer (it's the socket we're actually
+// talking on), and the call layer uses it to de-obfuscate mDNS ICE candidates.
+func (m *Manager) RemoteIP(peerID string) string {
+	m.mu.Lock()
+	conn, ok := m.conns[peerID]
+	m.mu.Unlock()
+	if !ok || conn == nil {
+		return ""
+	}
+	if tcpAddr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		return tcpAddr.IP.String()
+	}
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		return ""
+	}
+	return host
+}
+
 func (m *Manager) getConn(peer models.Peer) (net.Conn, error) {
 	m.mu.Lock()
 	conn, ok := m.conns[peer.PeerID]

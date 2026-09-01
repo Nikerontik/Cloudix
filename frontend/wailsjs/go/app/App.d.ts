@@ -4,6 +4,8 @@ import {models} from '../models';
 
 export function AddManualPeer(arg1:string):Promise<void>;
 
+export function AppVersion():Promise<string>;
+
 export function BlockPeer(arg1:string):Promise<void>;
 
 export function DeleteChat(arg1:string):Promise<void>;
@@ -11,6 +13,8 @@ export function DeleteChat(arg1:string):Promise<void>;
 export function DeleteMessage(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function GetChats():Promise<Array<models.Chat>>;
+
+export function GetDataDir():Promise<string>;
 
 export function GetMessages(arg1:string):Promise<Array<models.Message>>;
 
@@ -25,6 +29,8 @@ export function Logout():Promise<void>;
 export function MarkChatRead(arg1:string):Promise<void>;
 
 export function NetworkReady():Promise<boolean>;
+
+export function OpenDataFolder():Promise<void>;
 
 export function ReactToMessage(arg1:string,arg2:string,arg3:string):Promise<void>;
 
