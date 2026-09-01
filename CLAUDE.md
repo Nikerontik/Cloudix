@@ -25,7 +25,12 @@ Three ways two people can reach each other:
 |---|---|---|
 | `main` | `2ac6e18` | Pure P2P: LAN + direct-hosted overlay. No relay. |
 | `dev` | `2ac6e18` | Same as main. |
-| `relay-server` | `d091e97` | **Active branch.** Adds the optional relay server. |
+| `relay-server` | `d091e97` | Adds the optional relay server. |
+| `mobile` | off `relay-server` | **Active branch.** iOS + Android. See "Mobile" below. |
+
+The iOS build has been installed via sideloading and **confirmed working by the user
+(2026-09-02)** — it runs, and the parts they exercised behaved. The Android APK builds
+and its contents verify, but it has not yet been installed on a device.
 
 Working and confirmed by the user: messages, media, reactions, screen sharing, and
 **calls across different networks** (which turned out not to need TURN in their case).
@@ -184,6 +189,77 @@ holds no key, and forwards already-sealed bytes.
   `RelayListener.Close()` sends an explicit `bye` so leaving frees the room immediately.
 - `RelayListener` implements `net.Listener`, so `Host.acceptLoop` is unchanged;
   `Client.handshake` is split out of `Connect` so it runs identically either way.
+
+## Mobile (branch `mobile`, off `relay-server`)
+
+Real `.ipa` and `.apk` build from this tree. Both wrap the **existing** React
+frontend in a WebView over the **same** `backend/app` — nothing is reimplemented.
+
+```bash
+./ios/build.sh        # -> build/mobile/Cloudix.ipa  (unsigned, 4.9 MB)
+./android/build.sh    # -> build/mobile/Cloudix.apk  (debug-signed, 49 MB)
+```
+
+The IPA is unsigned on purpose: Sideloadly/AltStore re-sign it with the user's
+own Apple ID, so no developer account is needed. The APK uses the Gradle debug
+key for the same reason.
+
+**Toolchain:** `gomobile`/`gobind` in `~/go/bin`, Xcode, and for Android
+`ANDROID_HOME=/opt/homebrew/share/android-commandlinetools` (NDK 26.1, platform
+34, build-tools 34), `openjdk@17`, `gradle`.
+
+### How it hangs together
+
+`backend/app` no longer imports Wails. Everything platform-specific went behind
+`app.Host` (`backend/app/host.go`): `Emit`, `Logf`, `SaveMedia`, `OpenFolder`.
+Desktop implements it in `desktop_host.go`; mobile implements it in `mobile/`.
+That is what makes the same 1500-line app layer compile for android/* and
+ios/arm64.
+
+`mobile/` is a **separate Go module** (`replace cloudix => ../`). This is
+deliberate: pulling `golang.org/x/mobile` into the root go.mod churned
+`go 1.25→1.26`, `x/crypto`, `x/net` and `x/text`. The nested module leaves the
+desktop go.mod untouched.
+
+`mobile.Call(method, argsJSON)` dispatches into `*App` **by reflection**, with
+args as a positional JSON array — exactly how Wails calls the same methods from
+JS. So `frontend/public/mobile-bridge.js` can install stand-ins for `window.go`
+and `window.runtime`, and `App.jsx` plus `frontend/wailsjs/**` run unmodified.
+
+### Mobile-specific traps
+
+**gobind silently drops unsupported signatures.** Feed it `[]models.Peer`,
+`map[string]int` or `context.Context` and it emits no method, no warning, and
+exit code 0 — a library missing half its API with no diagnostic. This is why
+nothing from `backend/app` is exposed directly and everything goes through the
+one string-in/string-out `Call`.
+
+**A `file://` page is not a secure context, so `getUserMedia` is refused there**
+— that would have killed every call, silently. `mobile/assets.go` serves the UI
+over `http://127.0.0.1:<random>/` instead, which *is* trustworthy. Android also
+needs `network_security_config.xml` to permit cleartext on loopback only.
+
+**Keep `OnStartup: backendApp.OnStartup` a direct reference in main.go.**
+Wrapping it in a closure stops Wails recognising the lifecycle hook, and it then
+binds `OnStartup` as a method callable from the frontend. The desktop host gets
+its context through `app.ContextAware` instead.
+
+**Never add an exported method to `*App` for internal wiring** — every one
+becomes a Wails binding. `SetHost` did, before the host moved into `NewApp`.
+
+### What is deliberately absent, not stubbed
+
+`frontend/src/platform.js` gates the UI on `window.__cloudix.features`, set by
+the native shell. A capability the build cannot deliver is *removed*, not shown
+inert. iOS hides screen-share sending (ReplayKit needs App Groups, which need a
+paid account), LAN discovery (multicast needs an Apple-granted entitlement),
+network hosting and the data-folder row. Android keeps everything but hosting —
+a phone behind carrier NAT can never accept an inbound connection.
+
+**iOS cannot receive in the background at all.** The process is suspended and
+every socket dies; only push can wake it, and push needs a paid account plus a
+sender. Android holds the socket with `ConnectionService`, a foreground service.
+That single difference is the whole gap between the two platforms.
 
 ## Why things are the way they are
 
