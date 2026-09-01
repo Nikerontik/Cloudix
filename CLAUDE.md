@@ -10,7 +10,19 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
-## Session state (2026-09-07)
+## Session state (2026-09-08)
+
+- Screen share could show a **black square** whenever a share was stopped and restarted,
+  or when the second peer started sharing while the first already was. Cause: `ontrack`
+  does **not** fire again when a transceiver is reused, so the receiver never learned the
+  new track and matched the peer's announced track id against nothing. Fixed by anchoring
+  the share to the **transceiver mid** (stable across renegotiation, unlike track ids):
+  `announceScreen()` re-sends `screen-on` after every negotiation once the mid exists, and
+  `resolveScreenTracks()` sweeps `pc.getReceivers()` instead of trusting `ontrack`.
+- Added a microphone picker (Settings → Audio, `cloudix:mic-device`), falling back to the
+  system default if the remembered device is gone.
+
+## Older session state (2026-09-07)
 
 - **Intermittent call failure root-caused: TCP connection glare.** Diagnostic showed the
   Mac stuck in `have-local-offer` with `cand recv: 0` while Windows was `stable` with

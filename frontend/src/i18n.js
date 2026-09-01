@@ -69,7 +69,7 @@ const dict = {
     },
     disclaimer: {
       text:
-        "Это первая версия приложения. Возможны баги и нестабильная работа — спасибо за понимание!",
+        "Приложение сделано не самым опытным разработчиком. Возможны баги и нестабильная работа — спасибо за понимание!",
       ok: "Понятно, продолжить",
     },
     call: {
@@ -114,6 +114,10 @@ const dict = {
       theme: "Тема",
       language: "Язык",
       connection: "Подключение",
+      audio: "Звук",
+      micDevice: "Микрофон",
+      micDefault: "По умолчанию",
+      micHint: "Применяется к следующему звонку.",
       profile: "Профиль",
       name: "Имя",
       nickname: "Никнейм",
@@ -230,7 +234,7 @@ const dict = {
     },
     disclaimer: {
       text:
-        "This is an early version of the app. Bugs and instability are possible — thanks for your patience!",
+        "This app was made by a not-so-experienced developer. Bugs and instability are possible — thanks for your patience!",
       ok: "Got it, continue",
     },
     call: {
@@ -274,6 +278,10 @@ const dict = {
       theme: "Theme",
       language: "Language",
       connection: "Connection",
+      audio: "Audio",
+      micDevice: "Microphone",
+      micDefault: "System default",
+      micHint: "Applies to the next call.",
       profile: "Profile",
       name: "Name",
       nickname: "Nickname",

@@ -35,6 +35,15 @@ const EMOJIS = [
 const sortByTs = (arr) =>
   [...arr].sort((a, b) => (a?.ts || 0) - (b?.ts || 0));
 
+const readStored = (key, fallback, allowed) => {
+  try {
+    const v = localStorage.getItem(key);
+    return v && (!allowed || allowed.includes(v)) ? v : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
 // ---------------------------------------------------------------- screen ---
 // Screen-share encoding profile. Defaults target a LAN: 1080p60 with a high
 // ceiling, because the visible problems were bitrate starvation (blocky video)
@@ -44,6 +53,9 @@ const SCREEN_FPS = [15, 30, 60];
 const SCREEN_MODES = ["balanced", "detail", "motion"];
 const SCREEN_QUALITY_KEY = "cloudix:screen-quality";
 const SCREEN_QUALITY_EVENT = "cloudix:screen-quality-changed";
+const MIC_DEVICE_KEY = "cloudix:mic-device";
+
+const loadMicDevice = () => readStored(MIC_DEVICE_KEY, "");
 
 const DEFAULT_SCREEN_QUALITY = {
   height: 1080,
@@ -860,12 +872,14 @@ function CallModal({
   const screenWidthRef = useRef(760);
   const screenVideoSenderRef = useRef(null);
   const screenAudioStreamRef = useRef(null);
+  const screenAudioSenderRef = useRef(null);
+  const sharingRef = useRef(false);
   const screenQualityRef = useRef(loadScreenQuality());
   const screenX = useMotionValue(0);
   const screenY = useMotionValue(0);
   // Track ids the peer announced as their screen (WebRTC carries no such
   // labelling, so it rides on a `screen-on` signal).
-  const screenIdsRef = useRef({ video: "", audio: "" });
+  const screenIdsRef = useRef({ mid: "", video: "", audio: "" });
   // Every remote track we have seen, so a late `screen-on` can reclassify them.
   const receivedTracksRef = useRef([]);
   const iceStatsRef = useRef({
@@ -980,6 +994,44 @@ function CallModal({
       (tr) => tr.readyState !== "ended"
     );
     receivedTracksRef.current.forEach(routeTrack);
+  };
+
+  const watchTrack = (track) => {
+    const refresh = async () => {
+      await refreshRemoteVideoUi();
+      await refreshScreenUi();
+    };
+    track.onended = refresh;
+    track.onmute = refresh;
+    track.onunmute = refresh;
+  };
+
+  // `ontrack` does not fire again when a transceiver is reused, which is exactly
+  // what happens when a peer stops sharing and starts again, or when the two
+  // directions are toggled in turn. So instead of trusting that event, sweep the
+  // receivers directly and anchor the screen to the transceiver mid the peer
+  // announced — mids are stable across renegotiation, track ids are not.
+  const resolveScreenTracks = () => {
+    const pc = pcRef.current;
+    if (!pc) return;
+
+    pc.getReceivers().forEach((receiver) => {
+      const track = receiver.track;
+      if (!track) return;
+      if (!receivedTracksRef.current.some((tr) => tr.id === track.id)) {
+        receivedTracksRef.current.push(track);
+        watchTrack(track);
+      }
+    });
+
+    const mid = screenIdsRef.current.mid;
+    if (mid) {
+      const transceiver = pc.getTransceivers().find((tr) => tr.mid === mid);
+      const track = transceiver?.receiver?.track;
+      if (track) screenIdsRef.current.video = track.id;
+    }
+
+    reclassifyTracks();
   };
 
   const refreshScreenUi = async () => {
@@ -1168,6 +1220,7 @@ function CallModal({
     setMuted(false);
     setRemoteHasVideo(false);
     setRemoteZoomed(false);
+    sharingRef.current = false;
     setSharing(false);
     setRemoteScreen(false);
     setScreenMinimized(false);
@@ -1175,7 +1228,7 @@ function CallModal({
     setScreenReady(false);
     setScreenStats("");
     setDiagOpen(false);
-    screenIdsRef.current = { video: "", audio: "" };
+    screenIdsRef.current = { mid: "", video: "", audio: "" };
     screenSendersRef.current = [];
     receivedTracksRef.current = [];
     setSeconds(0);
@@ -1276,16 +1329,11 @@ function CallModal({
       }
       routeTrack(track);
 
-      const refresh = async () => {
-        await refreshRemoteVideoUi();
-        await refreshScreenUi();
-      };
-      track.onended = refresh;
-      track.onmute = refresh;
-      track.onunmute = refresh;
+      watchTrack(track);
 
       await attachRemoteStream();
-      await refresh();
+      await refreshRemoteVideoUi();
+      await refreshScreenUi();
     };
 
     const markConnected = () => {
@@ -1344,7 +1392,21 @@ function CallModal({
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video });
+      const micId = loadMicDevice();
+      const audioConstraint = micId ? { deviceId: { exact: micId } } : true;
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraint,
+          video,
+        });
+      } catch (err) {
+        // A remembered device can disappear (unplugged headset); fall back to
+        // the system default rather than failing the whole call.
+        if (!micId) throw err;
+        console.warn("preferred mic unavailable, using default", err);
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video });
+      }
       localStreamRef.current = stream;
 
       if (video && localVideoRef.current) {
@@ -1449,6 +1511,33 @@ function CallModal({
     } catch {}
   };
 
+  // Re-announced after every negotiation: the transceiver mid only exists once
+  // the exchange has settled, and it is the only identifier that survives a
+  // transceiver being reused for a second share.
+  const announceScreen = async () => {
+    if (!sharingRef.current || closedRef.current) return;
+    const pc = pcRef.current;
+    const sender = screenVideoSenderRef.current;
+    if (!pc || !sender) return;
+
+    const transceiver = pc.getTransceivers().find((tr) => tr.sender === sender);
+    try {
+      await WailsApp.SendSignal(
+        target.peerId,
+        callId,
+        "screen-on",
+        JSON.stringify({
+          mid: transceiver?.mid || "",
+          video: sender.track?.id || "",
+          audio: screenAudioSenderRef.current?.track?.id || "",
+        }),
+        true
+      );
+    } catch (err) {
+      console.warn("announceScreen failed", err);
+    }
+  };
+
   const startScreenShare = async () => {
     if (sharing || closedRef.current) return;
     const pc = pcRef.current;
@@ -1505,22 +1594,22 @@ function CallModal({
           stopScreenShare();
         };
       }
-      if (audioTrack) senders.push(pc.addTrack(audioTrack, stream));
+      if (audioTrack) {
+        const audioSender = pc.addTrack(audioTrack, stream);
+        senders.push(audioSender);
+        screenAudioSenderRef.current = audioSender;
+      }
 
       screenSendersRef.current = senders;
+      sharingRef.current = true;
       setSharing(true);
 
-      await WailsApp.SendSignal(
-        target.peerId,
-        callId,
-        "screen-on",
-        JSON.stringify({
-          video: videoTrack?.id || "",
-          audio: audioTrack?.id || "",
-        }),
-        true
-      );
+      // Announced twice on purpose: once now so a receiver that gets an
+      // ontrack event can bind immediately, and again after the exchange
+      // settles, when the mid exists.
+      await announceScreen();
       await renegotiate();
+      await announceScreen();
     } catch (err) {
       // A user cancelling the picker is not an error worth showing.
       if (err?.name !== "NotAllowedError" && err?.name !== "AbortError") {
@@ -1538,6 +1627,8 @@ function CallModal({
     const senders = screenSendersRef.current;
     screenSendersRef.current = [];
     screenVideoSenderRef.current = null;
+    screenAudioSenderRef.current = null;
+    sharingRef.current = false;
 
     senders.forEach((sender) => {
       try {
@@ -1664,11 +1755,15 @@ function CallModal({
     if (payload.kind === "screen-on") {
       try {
         const ids = JSON.parse(payload.data || "{}");
-        screenIdsRef.current = { video: ids.video || "", audio: ids.audio || "" };
+        screenIdsRef.current = {
+          mid: ids.mid || "",
+          video: ids.video || "",
+          audio: ids.audio || "",
+        };
       } catch {
-        screenIdsRef.current = { video: "", audio: "" };
+        screenIdsRef.current = { mid: "", video: "", audio: "" };
       }
-      reclassifyTracks();
+      resolveScreenTracks();
       await refreshRemoteVideoUi();
       await refreshScreenUi();
       return;
@@ -1676,7 +1771,7 @@ function CallModal({
 
     if (payload.kind === "screen-off") {
       const ids = screenIdsRef.current;
-      screenIdsRef.current = { video: "", audio: "" };
+      screenIdsRef.current = { mid: "", video: "", audio: "" };
       // Forget the screen tracks entirely. The sender's removeTrack leaves them
       // live-but-muted here, so reclassifying them would move a black frame
       // into the camera surface of the call card.
@@ -1710,8 +1805,10 @@ function CallModal({
 
         await attachRemoteStream();
         await refreshRemoteVideoUi();
+        resolveScreenTracks();
         await refreshScreenUi();
         await applyScreenEncoding();
+        await announceScreen();
       } else if (payload.kind === "ice") {
         if (pc.remoteDescription) {
           try {
@@ -1726,8 +1823,10 @@ function CallModal({
         await handleOfferLike(pc, payload);
         await attachRemoteStream();
         await refreshRemoteVideoUi();
+        resolveScreenTracks();
         await refreshScreenUi();
         await applyScreenEncoding();
+        await announceScreen();
       }
     } catch (err) {
       console.error("Signal handler failed:", err, payload);
@@ -2538,6 +2637,14 @@ function SettingsPanel({
   const [dataDir, setDataDir] = useState("");
   const [screenQuality, setScreenQuality] = useState(loadScreenQuality);
   const [audioInputs, setAudioInputs] = useState([]);
+  const [micDevice, setMicDevice] = useState(loadMicDevice);
+
+  const updateMicDevice = (id) => {
+    setMicDevice(id);
+    try {
+      localStorage.setItem(MIC_DEVICE_KEY, id);
+    } catch {}
+  };
 
   useEffect(() => {
     // Labels are only exposed once mic permission has been granted, which is
@@ -2633,6 +2740,20 @@ function SettingsPanel({
       {/* Version + data folder make it obvious which build is running and where
           its local database lives (stale side-by-side installs are otherwise
           invisible). */}
+      <div className="settings-group-title">{t.settings.audio}</div>
+      <div className="settings-row">
+        <label>{t.settings.micDevice}</label>
+        <select value={micDevice} onChange={(e) => updateMicDevice(e.target.value)}>
+          <option value="">{t.settings.micDefault}</option>
+          {audioInputs.map((d, i) => (
+            <option key={d.deviceId || i} value={d.deviceId}>
+              {d.label || `Audio input ${i + 1}`}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="settings-hint">{t.settings.micHint}</div>
+
       <div className="settings-group-title">{t.settings.screenShare}</div>
       <div className="settings-row">
         <label>{t.settings.screenResolution}</label>
@@ -2890,15 +3011,6 @@ function ProfilePanel({
     </motion.div>
   );
 }
-
-const readStored = (key, fallback, allowed) => {
-  try {
-    const v = localStorage.getItem(key);
-    return v && (!allowed || allowed.includes(v)) ? v : fallback;
-  } catch {
-    return fallback;
-  }
-};
 
 export default function App() {
   const [theme, setTheme] = useState(() => readStored("cloudix:theme", "dark", THEMES));
