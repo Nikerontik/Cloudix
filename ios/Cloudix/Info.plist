@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>ru</string>
+	<key>CFBundleDisplayName</key>
+	<string>Cloudix</string>
+	<key>CFBundleExecutable</key>
+	<string>Cloudix</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.cloudix.messenger</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Cloudix</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.2.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>MinimumOSVersion</key>
+	<string>14.0</string>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string></string>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+
+	<!-- Calls need camera and microphone; iOS refuses getUserMedia outright
+	     without these strings, with no visible error in the page. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Камера нужна для видеозвонков.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Микрофон нужен для звонков.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Прямое соединение с собеседником в локальной сети.</string>
+
+	<!-- The UI is served from 127.0.0.1 rather than file://, because a file:
+	     page is not a secure context and getUserMedia is refused there. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+
+	<!-- Keeps an already-connected call alive when the app is backgrounded.
+	     This does NOT deliver messages in the background: that needs push. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+
+	<!-- Saved media lands in Documents; these two make it visible in Files. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+</dict>
+</plist>
