@@ -10,7 +10,26 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
-## Session state (2026-09-04)
+## Session state (2026-09-05)
+
+**Root cause of the flaky calls found.** Diagnostics from a failed attempt:
+Mac `cand sent:1  cand recv:0 added:0 rejected:0  ice-conn:new  remote-cand:none`,
+Windows `cand sent:2  cand recv:1 added:1 rejected:0  ice-conn:checking`.
+
+`rejected: 0` cleared the mDNS rewrite of suspicion — nothing was being refused. The Mac
+simply **never received** the candidates Windows sent. `onSignalIncoming` dispatched to
+`signalHandlersRef`, but an incoming offer creates `callState` and `CallModal` only
+registers its handler on mount; every signal landing in that gap — in practice the first
+burst of ICE — was dropped on the floor. That is why roughly one call in ten connected.
+Fixed by buffering signals in `pendingSignalsRef` and replaying them to the first handler
+that registers (the offer is excluded, it already travels as `incomingOffer`).
+`iceCandidatePoolSize` was also removed — it pre-gathered before negotiation and made the
+stats misleading. Diagnostics now also report `cand queued`.
+
+If calls still fail, the next suspects are Windows Firewall dropping inbound UDP and the
+Mac gathering no srflx candidate (STUN unreachable from that machine).
+
+## Older session state (2026-09-04)
 
 **Mac ↔ Windows calls still fail.** First real diagnostics (both sides, `ice-conn: checking`,
 `pair: none succeeded yet`):

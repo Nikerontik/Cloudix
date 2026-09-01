@@ -705,7 +705,6 @@ const RTC_CONFIG = {
       ],
     },
   ],
-  iceCandidatePoolSize: 2,
 };
 
 function CallModal({
@@ -955,7 +954,7 @@ function CallModal({
   const refreshRemoteVideoUi = async () => {
     const liveVideoTracks = remoteStreamRef.current
       .getVideoTracks()
-      .filter((tr) => tr.readyState === "live" && tr.enabled !== false);
+      .filter((tr) => tr.readyState === "live" && tr.enabled !== false && !tr.muted);
 
     const hasVideo = liveVideoTracks.length > 0;
     setRemoteHasVideo(hasVideo);
@@ -1428,7 +1427,14 @@ function CallModal({
     }
 
     if (payload.kind === "screen-off") {
+      const ids = screenIdsRef.current;
       screenIdsRef.current = { video: "", audio: "" };
+      // Forget the screen tracks entirely. The sender's removeTrack leaves them
+      // live-but-muted here, so reclassifying them would move a black frame
+      // into the camera surface of the call card.
+      receivedTracksRef.current = receivedTracksRef.current.filter(
+        (tr) => tr.id !== ids.video && tr.id !== ids.audio
+      );
       try {
         remoteScreenStreamRef.current
           .getTracks()
@@ -1568,6 +1574,7 @@ function CallModal({
         `cand sent:  ${iceStatsRef.current.sent}`,
         `cand recv:  ${iceStatsRef.current.received}` +
           ` added:${iceStatsRef.current.added} rejected:${iceStatsRef.current.rejected}`,
+        `cand queued: ${pendingIceRef.current.length + earlyIceRef.current.length}`,
       ];
       if (iceStatsRef.current.rejected) {
         lines.push(`reject err: ${iceStatsRef.current.lastError}`);
@@ -1737,9 +1744,9 @@ function CallModal({
                 />
               </div>
               <div className="call-labels">
-                <span>{muted ? t.call.unmute : t.call.mute}</span>
-                <span>{sharing ? t.call.shareStop : t.call.share}</span>
-                <span>{t.call.end}</span>
+                <span>{t.call.muteShort}</span>
+                <span>{t.call.shareShort}</span>
+                <span>{t.call.endShort}</span>
               </div>
               {sharing && (
                 <div className="call-sharing-note">
@@ -2637,6 +2644,7 @@ export default function App() {
   const [viewerItem, setViewerItem] = useState(null);
 
   const signalHandlersRef = useRef(new Set());
+  const pendingSignalsRef = useRef([]);
   const blockedRef = useRef(blocked);
   const chatsRawRef = useRef(chatsRaw);
   const onlinePeersRawRef = useRef(onlinePeersRaw);
@@ -2673,8 +2681,24 @@ export default function App() {
     [onlinePeersRaw, blocked]
   );
 
+  // An incoming offer creates callState, but CallModal only registers its
+  // handler once React has mounted it. Every signal that lands in that gap —
+  // in practice the first burst of ICE candidates — used to be dropped on the
+  // floor, which is why calls connected only occasionally. Buffer them and
+  // replay to the first handler that registers.
   const registerSignalHandler = useCallback((handler) => {
     signalHandlersRef.current.add(handler);
+
+    const queued = pendingSignalsRef.current;
+    pendingSignalsRef.current = [];
+    queued.forEach((payload) => {
+      try {
+        handler(payload);
+      } catch (err) {
+        console.error("replaying buffered signal failed:", err);
+      }
+    });
+
     return () => signalHandlersRef.current.delete(handler);
   }, []);
 
@@ -2890,6 +2914,16 @@ export default function App() {
             incomingOffer: payload.data,
           };
         });
+      }
+
+      // The offer itself is already carried into CallModal as `incomingOffer`,
+      // so it must not be replayed; everything else waits for a handler.
+      if (signalHandlersRef.current.size === 0) {
+        if (payload.kind !== "offer") {
+          pendingSignalsRef.current.push(payload);
+          if (pendingSignalsRef.current.length > 300) pendingSignalsRef.current.shift();
+        }
+        return;
       }
 
       signalHandlersRef.current.forEach((h) => h(payload));
@@ -3174,6 +3208,7 @@ export default function App() {
   };
 
   const closeCall = useCallback(() => {
+    pendingSignalsRef.current = [];
     setCallState(null);
   }, []);
 

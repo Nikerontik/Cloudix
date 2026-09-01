@@ -290,6 +290,10 @@ button {
   padding: 0 10px 10px 10px;
 }
 
+[data-platform="windows"] .app-shell {
+  padding-top: 8px;
+}
+
 [data-platform="linux"] .app-shell {
   padding: 10px;
 }
@@ -1641,13 +1645,17 @@ button {
 .call-labels {
   display: flex;
   gap: 16px;
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-tertiary);
 }
 
 .call-labels span {
   width: 50px;
   text-align: center;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .call-remote-video {
