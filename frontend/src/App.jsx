@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence, useDragControls, useMotionValue } from "framer-motion";
 import { useT, previewText } from "./i18n";
+import { can, isMobile } from "./platform";
 import * as WailsApp from "../wailsjs/go/app/App";
 import {
   EventsOn,
@@ -151,7 +152,14 @@ const fmtBitrate = (bps) =>
 // Guess the platform before first paint so Windows never flashes the macOS
 // window chrome; Environment() confirms it right after mount.
 function guessPlatform() {
+  // The mobile bridge loads before this bundle and knows the platform for
+  // certain, which UA sniffing does not: iPadOS reports itself as a Mac.
+  if (typeof window !== "undefined" && window.__cloudix && window.__cloudix.platform) {
+    return window.__cloudix.platform;
+  }
   const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  if (/android/i.test(ua)) return "android";
+  if (/iphone|ipad|ipod/i.test(ua)) return "ios";
   if (/windows|win32|win64/i.test(ua)) return "windows";
   if (/linux|x11/i.test(ua) && !/android/i.test(ua)) return "linux";
   return "darwin";
@@ -238,6 +246,9 @@ function WindowsTitlebar({ t }) {
 // Renders the right chrome for the platform: our bar on Windows, the spacer
 // that clears the mac traffic lights everywhere else.
 function AppTitlebar({ platform, t, className = "titlebar" }) {
+  // A phone has no window to minimise, maximise or close, and no traffic-light
+  // inset to leave room for.
+  if (platform === "ios" || platform === "android") return null;
   if (platform === "windows") return <WindowsTitlebar t={t} />;
   return <div className={className} />;
 }
@@ -553,7 +564,7 @@ function Sidebar({
   // FIX: убраны вкладки "groups"/"channels" по запросу — они никогда не были
   // реализованы и только занимали место. "saved" тоже убрана как отдельная
   // вкладка — теперь это закреплённый чат сверху списка (см. App: savedChatMeta).
-  const tabsOrder = ["all", "online"];
+  const tabsOrder = can("lanDiscovery") ? ["all", "online"] : ["all"];
 
   // Unread across every chat, so the tab shows new messages even while the
   // "Online" tab is the one being looked at.
@@ -765,7 +776,7 @@ function Sidebar({
 // The overlay network panel: create a network or join one by invite. Opened
 // from the sidebar footer, next to Settings and GitHub.
 function NetworkPanel({ status, t, onClose, onRefresh }) {
-  const [tab, setTab] = useState(status?.active ? "status" : "create");
+  const [tab, setTab] = useState(status?.active ? "status" : can("networkHosting") ? "create" : "join");
   const [mode, setMode] = useState("invite");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
@@ -844,22 +855,24 @@ function NetworkPanel({ status, t, onClose, onRefresh }) {
             <>
               <p className="net-sub">{t.net.subtitle}</p>
 
-              <div className="sidebar-tabs net-tabs">
-                <button
-                  type="button"
-                  className={"tab-btn " + (tab === "create" ? "active" : "")}
-                  onClick={() => setTab("create")}
-                >
-                  {t.net.tabCreate}
-                </button>
-                <button
-                  type="button"
-                  className={"tab-btn " + (tab === "join" ? "active" : "")}
-                  onClick={() => setTab("join")}
-                >
-                  {t.net.tabJoin}
-                </button>
-              </div>
+              {can("networkHosting") && (
+                <div className="sidebar-tabs net-tabs">
+                  <button
+                    type="button"
+                    className={"tab-btn " + (tab === "create" ? "active" : "")}
+                    onClick={() => setTab("create")}
+                  >
+                    {t.net.tabCreate}
+                  </button>
+                  <button
+                    type="button"
+                    className={"tab-btn " + (tab === "join" ? "active" : "")}
+                    onClick={() => setTab("join")}
+                  >
+                    {t.net.tabJoin}
+                  </button>
+                </div>
+              )}
 
               <div className="sidebar-tabs net-tabs">
                 <button
@@ -2755,15 +2768,17 @@ function CallModal({
                 <button type="button" className="call-btn" onClick={toggleMute}>
                   {muted ? "🔇" : "🎙"}
                 </button>
-                <button
-                  type="button"
-                  className={"call-btn " + (sharing ? "sharing" : "")}
-                  title={sharing ? t.call.shareStop : t.call.share}
-                  aria-label={sharing ? t.call.shareStop : t.call.share}
-                  onClick={toggleScreenShare}
-                >
-                  🖥
-                </button>
+                {can("screenShareSend") && (
+                  <button
+                    type="button"
+                    className={"call-btn " + (sharing ? "sharing" : "")}
+                    title={sharing ? t.call.shareStop : t.call.share}
+                    aria-label={sharing ? t.call.shareStop : t.call.share}
+                    onClick={toggleScreenShare}
+                  >
+                    🖥
+                  </button>
+                )}
                 <button type="button" className="call-btn end" onClick={endCall}>
                   ✕
                 </button>
@@ -3061,6 +3076,7 @@ function ChatWindow({
   isPeerTyping,
   blocked,
   pingByPeer,
+  onBack,
   t,
 }) {
   const [text, setText] = useState("");
@@ -3187,6 +3203,19 @@ function ChatWindow({
   return (
     <div className="main-panel glass">
       <div className="chat-header" onClick={() => onOpenProfile(chat, false)}>
+        {isMobile && (
+          <button
+            type="button"
+            className="chat-back"
+            aria-label={t.back}
+            onClick={(e) => {
+              e.stopPropagation();
+              onBack?.();
+            }}
+          >
+            ‹
+          </button>
+        )}
         <Avatar name={chat.title} avatar={chat.avatar} online={chat.online} />
         <div className="chat-header-info">
           <div className="chat-header-name">{chat.title}</div>
@@ -3576,19 +3605,21 @@ function SettingsPanel({
         <label>{t.settings.version}</label>
         <span className="peer-id-value">{version || "…"}</span>
       </div>
-      <div className="settings-row">
-        <label>{t.settings.dataFolder}</label>
-        <span className="settings-value" title={dataDir}>
-          {dataDir || "…"}
-        </span>
-        <button
-          type="button"
-          className="theme-toggle"
-          onClick={() => WailsApp.OpenDataFolder().catch(() => {})}
-        >
-          📂 {t.settings.openFolder}
-        </button>
-      </div>
+      {can("openDataFolder") && (
+        <div className="settings-row">
+          <label>{t.settings.dataFolder}</label>
+          <span className="settings-value" title={dataDir}>
+            {dataDir || "…"}
+          </span>
+          <button
+            type="button"
+            className="theme-toggle"
+            onClick={() => WailsApp.OpenDataFolder().catch(() => {})}
+          >
+            📂 {t.settings.openFolder}
+          </button>
+        </div>
+      )}
 
       <div className="settings-group-title">{t.settings.dangerZone}</div>
       <div className="settings-row">
@@ -4540,7 +4571,9 @@ export default function App() {
   return (
     <div className={"app-root " + (isMaximized ? "maximized" : "")}>
       <AppTitlebar platform={platform} t={t} />
-      <div className="app-shell">
+      {/* On a phone only one pane fits, and theme.css uses this to decide which:
+          the chat list, or whatever has taken over the main panel. */}
+      <div className="app-shell" data-chat-open={activeChat || showSettings ? "true" : "false"}>
         <Sidebar
           chats={chatsList}
           onlinePeers={visibleOnlinePeers}
@@ -4588,6 +4621,7 @@ export default function App() {
             myPeerId={profile.peerId}
             connStatus={connStatus}
             onOpenProfile={openProfile}
+            onBack={() => setActiveChat(null)}
             onSend={(msg) => sendMessageToChat(activeChat, msg)}
             onDeleteMessage={(id, mode) => deleteMessageFromChat(activeChat, id, mode)}
             onReact={(id, reaction) => reactToMessage(activeChat, id, reaction)}

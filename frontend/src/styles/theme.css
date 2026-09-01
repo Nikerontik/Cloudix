@@ -2661,3 +2661,114 @@ button {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+
+/* ---------------------------------------------------------------------------
+   Phones.
+   Two panes side by side do not fit 390 CSS pixels, so the shell becomes one
+   column: the chat list fills the screen, and opening a conversation replaces
+   it. `data-chat-open` on .app-shell is what switches between the two.
+   Gated on the platform rather than a width so a narrow desktop window keeps
+   the two-pane layout it was designed for.
+   --------------------------------------------------------------------------- */
+[data-platform="ios"],
+[data-platform="android"] {
+  /* The keyboard shrinks the visual viewport; 100vh would sit underneath it. */
+  --app-height: 100dvh;
+}
+
+[data-platform="ios"] .app-root,
+[data-platform="android"] .app-root {
+  height: 100dvh;
+  border-radius: 0;
+  /* Notch, home indicator and status bar. viewport-fit=cover in index.html is
+     what makes these non-zero. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+[data-platform="ios"] .app-root::before,
+[data-platform="android"] .app-root::before {
+  border-radius: 0;
+}
+
+[data-platform="ios"] .app-shell,
+[data-platform="android"] .app-shell {
+  padding: 0;
+}
+
+[data-platform="ios"] .sidebar,
+[data-platform="android"] .sidebar {
+  width: 100%;
+  margin-right: 0;
+  border-radius: 0;
+}
+
+/* One pane at a time. */
+[data-platform="ios"] .app-shell[data-chat-open="true"] .sidebar,
+[data-platform="android"] .app-shell[data-chat-open="true"] .sidebar {
+  display: none;
+}
+
+[data-platform="ios"] .app-shell[data-chat-open="false"] .main-panel,
+[data-platform="android"] .app-shell[data-chat-open="false"] .main-panel {
+  display: none;
+}
+
+[data-platform="ios"] .main-panel,
+[data-platform="android"] .main-panel {
+  border-radius: 0;
+  width: 100%;
+}
+
+/* Touch targets: 44px is the smallest reliably tappable size on both
+   platforms, and the desktop sizes are well under it. */
+[data-platform="ios"] .tab-btn,
+[data-platform="android"] .tab-btn,
+[data-platform="ios"] .call-btn,
+[data-platform="android"] .call-btn,
+[data-platform="ios"] .theme-toggle,
+[data-platform="android"] .theme-toggle {
+  min-height: 44px;
+}
+
+[data-platform="ios"] .chat-item,
+[data-platform="android"] .chat-item {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+/* iOS zooms the page in when a focused input is under 16px. */
+[data-platform="ios"] input,
+[data-platform="ios"] textarea,
+[data-platform="ios"] select,
+[data-platform="android"] input,
+[data-platform="android"] textarea,
+[data-platform="android"] select {
+  font-size: 16px;
+}
+
+[data-platform="ios"] .call-card,
+[data-platform="android"] .call-card {
+  width: min(340px, calc(100vw - 20px));
+}
+
+/* Back out of a conversation. Only mobile renders it: on desktop the chat list
+   is already on screen next to the conversation. */
+.chat-back {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 30px;
+  line-height: 1;
+  padding: 0 10px 0 2px;
+  margin-right: 2px;
+  cursor: pointer;
+  min-width: 34px;
+  min-height: 44px;
+  opacity: 0.85;
+  transition: opacity var(--ease);
+}
+
+.chat-back:active {
+  opacity: 0.5;
+}

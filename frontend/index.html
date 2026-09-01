@@ -3,6 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <title>Cloudix</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<!-- Installs window.go / window.runtime stand-ins on mobile. No-ops on desktop,
+     where the real Wails runtime owns those globals. Must run before the bundle. -->
+<script src="/mobile-bridge.js"></script>
 </head>
 <body>
 <div id="root"></div>

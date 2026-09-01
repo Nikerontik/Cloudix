@@ -1,5 +1,6 @@
 const dict = {
   ru: {
+    back: "Назад",
     appName: "Cloudix",
     searchPlaceholder: "Поиск",
     settingsBtn: "Настройки",
@@ -303,6 +304,7 @@ const dict = {
     },
   },
   en: {
+    back: "Back",
     appName: "Cloudix",
     searchPlaceholder: "Search",
     settingsBtn: "Settings",
