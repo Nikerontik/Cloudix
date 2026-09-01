@@ -144,3 +144,48 @@ func waitForPort(t *testing.T, addr string) {
 func dialShort(addr string) (net.Conn, error) {
 	return net.DialTimeout("tcp", addr, time.Second)
 }
+
+// A host that dies must release its room quickly enough for a restart to
+// re-register, rather than leaving it locked until TCP gives up.
+func TestRelayRoomReleasedOnHostLoss(t *testing.T) {
+	bin := t.TempDir() + "/cloudix-relay"
+	if out, err := exec.Command("go", "build", "-o", bin, "../../cmd/cloudix-relay").CombinedOutput(); err != nil {
+		t.Fatalf("build relay: %v\n%s", err, out)
+	}
+
+	relayAddr := "127.0.0.1:47996"
+	srv := exec.Command(bin, "-addr", relayAddr)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start relay: %v", err)
+	}
+	defer func() {
+		_ = srv.Process.Kill()
+		_ = srv.Wait()
+	}()
+	waitForPort(t, relayAddr)
+
+	const name, pass = "Restart Net", "a-good-long-password"
+	cfg := RelayConfig{Addr: relayAddr}
+
+	id1, _ := NewIdentity()
+	first := NewService(id1)
+	if _, err := first.Create(name, pass, Member{PeerID: "H"}, 0, cfg); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+
+	// Leave() closes the control connection, which the relay must notice.
+	first.Leave()
+
+	id2, _ := NewIdentity()
+	second := NewService(id2)
+	var err error
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err = second.Create(name, pass, Member{PeerID: "H2"}, 0, cfg); err == nil {
+			second.Leave()
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("room never freed after the host left: %v", err)
+}

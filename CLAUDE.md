@@ -10,7 +10,27 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
-## Session state (2026-09-10)
+## Session state (2026-09-11) — branch `relay-server`
+
+`main` holds the pure P2P build (LAN + direct-hosted overlay). This branch adds the
+**optional relay** for people behind CGNAT, who cannot host at all.
+
+- `cmd/cloudix-relay` — standalone server for a VPS. Pairs two TCP connections naming the
+  same room and copies bytes. Knows nothing else.
+- `backend/vpn/relay.go` — client side. `RelayListener` implements `net.Listener`, so
+  `Host.acceptLoop` is untouched; `Client.handshake` was split out of `Connect` so it runs
+  identically over a dialled or relayed connection.
+- **The relay is user-supplied, never hardcoded.** Address + token live in `localStorage`
+  under `cloudix:relay` and are entered in the network panel. Do not add a default server.
+- Relay security: addressed by the blinded network id, takes no part in authentication,
+  holds no key, forwards already-sealed bytes. Its `-token` guards bandwidth, not
+  confidentiality — the UI says so explicitly, keep it that way.
+- Hosts ping the relay every 15s; the relay releases a room after 45s of silence, so a
+  host restart can re-register instead of waiting for TCP to time out.
+- Tests build and run the real relay binary: end-to-end through it, wrong-token rejection,
+  and room release after the host leaves.
+
+## Older session state (2026-09-10)
 
 - Built the **overlay network** (`backend/vpn`) — Cloudix's own answer to "use RadminVPN
   to talk over the internet". See "Overlay network" below for the design and its limits.

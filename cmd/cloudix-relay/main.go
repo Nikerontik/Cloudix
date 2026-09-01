@@ -37,13 +37,19 @@ const (
 	msgJoin    = "join"
 	msgAccept  = "accept"
 	msgSession = "session"
+	msgPing    = "ping"
 	msgOK      = "ok"
 	msgError   = "error"
 
 	handshakeTimeout = 10 * time.Second
-	sessionTimeout   = 20 * time.Second
-	maxHandshake     = 8 * 1024
-	maxRoomIDLen     = 128
+	// A host that vanishes without closing cleanly — app killed, laptop lid
+	// shut, network dropped — would otherwise keep its room locked until TCP
+	// gave up, which can take minutes. Hosts ping; silence past this releases
+	// the room so the host can re-register immediately on restart.
+	controlIdleTimeout = 45 * time.Second
+	sessionTimeout     = 20 * time.Second
+	maxHandshake       = 8 * 1024
+	maxRoomIDLen       = 128
 )
 
 type message struct {
@@ -173,11 +179,21 @@ func (r *relay) serveHost(conn net.Conn, roomID string) {
 	}
 	log.Printf("room %s… hosted", short(roomID))
 
-	// Block until the control connection dies; nothing else is expected on it.
-	buf := make([]byte, 256)
+	// Hold the room for as long as the host keeps pinging.
+	reader := bufio.NewReaderSize(conn, 1024)
 	for {
-		if _, err := conn.Read(buf); err != nil {
+		_ = conn.SetReadDeadline(time.Now().Add(controlIdleTimeout))
+		msg, err := readMsg(reader)
+		if err != nil {
 			break
+		}
+		if msg.Type == msgPing {
+			rm.mu.Lock()
+			err = writeMsg(conn, message{Type: msgOK})
+			rm.mu.Unlock()
+			if err != nil {
+				break
+			}
 		}
 	}
 	r.dropRoom(roomID, rm)

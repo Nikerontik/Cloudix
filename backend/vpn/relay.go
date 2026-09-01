@@ -33,6 +33,7 @@ const (
 	relayJoin   = "join"    // joiner -> relay: connect me to this room
 	relayAccept = "accept"  // host -> relay: here is the other end of session sid
 	relaySess   = "session" // relay -> host: a joiner is waiting
+	relayPing   = "ping"    // host -> relay: the room is still wanted
 	relayOK     = "ok"
 	relayErr    = "error"
 
@@ -195,7 +196,7 @@ func (l *RelayListener) readControl(conn net.Conn, reader *bufio.Reader) {
 			return
 		}
 		if msg.Type != relaySess || msg.Sid == "" {
-			continue
+			continue // ok replies to pings land here and are simply ignored
 		}
 		go l.openSession(msg.Sid)
 	}
@@ -233,9 +234,11 @@ func (l *RelayListener) openSession(sid string) {
 	}
 }
 
-// controlLoop keeps the registration alive across relay restarts and drops.
+// controlLoop keeps the registration alive: it pings so the relay knows the
+// room is still wanted, and re-registers after a relay restart or a dropped
+// connection.
 func (l *RelayListener) controlLoop() {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -243,10 +246,20 @@ func (l *RelayListener) controlLoop() {
 			return
 		case <-ticker.C:
 			l.mu.Lock()
-			alive := l.control != nil
+			conn := l.control
 			l.mu.Unlock()
-			if !alive {
+
+			if conn == nil {
 				_ = l.connectControl()
+				continue
+			}
+			if err := writeRelayMsg(conn, relayMsg{Type: relayPing}); err != nil {
+				_ = conn.Close()
+				l.mu.Lock()
+				if l.control == conn {
+					l.control = nil
+				}
+				l.mu.Unlock()
 			}
 		}
 	}
