@@ -189,3 +189,56 @@ func TestRelayRoomReleasedOnHostLoss(t *testing.T) {
 	}
 	t.Fatalf("room never freed after the host left: %v", err)
 }
+
+// When the host dissolves the network, members must stop showing it as active —
+// otherwise peers linger as "online" and messages queue against nobody.
+func TestMemberSeesHostLeave(t *testing.T) {
+	bin := t.TempDir() + "/cloudix-relay"
+	if out, err := exec.Command("go", "build", "-o", bin, "../../cmd/cloudix-relay").CombinedOutput(); err != nil {
+		t.Fatalf("build relay: %v\n%s", err, out)
+	}
+	relayAddr := "127.0.0.1:47997"
+	srv := exec.Command(bin, "-addr", relayAddr)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start relay: %v", err)
+	}
+	defer func() {
+		_ = srv.Process.Kill()
+		_ = srv.Wait()
+	}()
+	waitForPort(t, relayAddr)
+
+	const name, pass = "Dissolve Net", "a-good-long-password"
+	cfg := RelayConfig{Addr: relayAddr}
+
+	hostID, _ := NewIdentity()
+	memberID, _ := NewIdentity()
+
+	hostSvc := NewService(hostID)
+	if _, err := hostSvc.Create(name, pass, Member{PeerID: "H"}, 0, cfg); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	memberSvc := NewService(memberID)
+	if _, err := memberSvc.Join(name, pass, "", Member{PeerID: "M"}, cfg); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	defer memberSvc.Leave()
+
+	if !memberSvc.Status().Active {
+		t.Fatal("member should be active after joining")
+	}
+
+	hostSvc.Leave()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		st := memberSvc.Status()
+		if !st.Active && len(st.Members) == 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	st := memberSvc.Status()
+	t.Fatalf("member still active=%v with %d members after the host left", st.Active, len(st.Members))
+}

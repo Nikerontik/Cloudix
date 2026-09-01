@@ -1,0 +1,46 @@
+name: Release relay
+
+# Publishes cloudix-relay binaries so a server can be set up with curl instead
+# of cross-compiling and scp-ing by hand.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build relay binaries
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            out="dist/cloudix-relay-${os}-${arch}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/cloudix-relay
+          done
+          cd dist && sha256sum cloudix-relay-* > SHA256SUMS && cat SHA256SUMS
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/cloudix-relay-*
+            dist/SHA256SUMS
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudix-relay
+          path: dist/

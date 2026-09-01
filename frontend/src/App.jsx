@@ -1227,17 +1227,49 @@ function MediaPanel({ messages, onClose, onOpenMedia, t }) {
   );
 }
 
-const RTC_CONFIG = {
-  iceServers: [
-    {
-      urls: [
-        "stun:stun.l.google.com:19302",
-        "stun:stun1.l.google.com:19302",
-        "stun:stun.cloudflare.com:3478",
-      ],
-    },
-  ],
-};
+const ICE_KEY = "cloudix:ice";
+
+const DEFAULT_STUN = [
+  "stun:stun.l.google.com:19302",
+  "stun:stun1.l.google.com:19302",
+  "stun:stun.cloudflare.com:3478",
+];
+
+function loadIceConfig() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ICE_KEY) || "{}");
+    return {
+      turnUrl: raw.turnUrl || "",
+      turnUser: raw.turnUser || "",
+      turnPass: raw.turnPass || "",
+    };
+  } catch {
+    return { turnUrl: "", turnUser: "", turnPass: "" };
+  }
+}
+
+function saveIceConfig(cfg) {
+  try {
+    localStorage.setItem(ICE_KEY, JSON.stringify(cfg));
+  } catch {}
+}
+
+// STUN only tells a peer its own public address; it cannot join two peers whose
+// routers both refuse unsolicited traffic. When both sides are behind
+// carrier-grade NAT — increasingly the norm — the media has to be relayed by a
+// TURN server, which the user supplies just like the network relay.
+function buildRtcConfig() {
+  const cfg = loadIceConfig();
+  const servers = [{ urls: DEFAULT_STUN }];
+  if (cfg.turnUrl) {
+    servers.push({
+      urls: cfg.turnUrl,
+      username: cfg.turnUser,
+      credential: cfg.turnPass,
+    });
+  }
+  return { iceServers: servers };
+}
 
 function CallModal({
   target,
@@ -1740,7 +1772,7 @@ function CallModal({
   const createPeerConnection = () => {
     if (pcRef.current) return pcRef.current;
 
-    const pc = new RTCPeerConnection(RTC_CONFIG);
+    const pc = new RTCPeerConnection(buildRtcConfig());
     pcRef.current = pc;
 
     if (earlyIceRef.current.length) {
@@ -3186,6 +3218,13 @@ function SettingsPanel({
   const [screenQuality, setScreenQuality] = useState(loadScreenQuality);
   const [audioInputs, setAudioInputs] = useState([]);
   const [micDevice, setMicDevice] = useState(loadMicDevice);
+  const [ice, setIce] = useState(loadIceConfig);
+
+  const updateIce = (patch) => {
+    const next = { ...ice, ...patch };
+    setIce(next);
+    saveIceConfig(next);
+  };
 
   const updateMicDevice = (id) => {
     setMicDevice(id);
@@ -3299,6 +3338,34 @@ function SettingsPanel({
         </select>
       </div>
       <div className="settings-hint">{t.settings.micHint}</div>
+
+      <div className="settings-group-title">{t.settings.calls}</div>
+      <div className="settings-row">
+        <label>{t.settings.turnUrl}</label>
+        <input
+          type="text"
+          value={ice.turnUrl}
+          placeholder={t.settings.turnUrlPlaceholder}
+          onChange={(e) => updateIce({ turnUrl: e.target.value })}
+        />
+      </div>
+      <div className="settings-row">
+        <label>{t.settings.turnUser}</label>
+        <input
+          type="text"
+          value={ice.turnUser}
+          onChange={(e) => updateIce({ turnUser: e.target.value })}
+        />
+      </div>
+      <div className="settings-row">
+        <label>{t.settings.turnPass}</label>
+        <input
+          type="password"
+          value={ice.turnPass}
+          onChange={(e) => updateIce({ turnPass: e.target.value })}
+        />
+      </div>
+      <div className="settings-hint">{t.settings.turnHint}</div>
 
       <div className="settings-group-title">{t.settings.screenShare}</div>
       <div className="settings-row">

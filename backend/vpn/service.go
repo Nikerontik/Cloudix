@@ -231,11 +231,24 @@ func (s *Service) Join(netName, password, addr string, self Member, relay RelayC
 	client.OnRelay(func(from string, payload []byte) { s.deliver(from, payload) })
 	client.OnClosed(func(err error) {
 		s.mu.Lock()
-		if s.client == client {
+		stale := s.client == client
+		if stale {
 			s.lastError = "disconnected from the network host"
+			// Clearing the roster matters: without it everyone the network
+			// contained keeps showing as online after the host dissolves it,
+			// and messages queue up against peers that are no longer there.
+			s.members = nil
+			s.role = RoleNone
+			s.netName = ""
+			s.networkKey = nil
+			s.invite = ""
+			s.transport = ""
+			s.client = nil
 		}
 		s.mu.Unlock()
-		s.emit(s.Status())
+		if stale {
+			s.emit(s.Status())
+		}
 	})
 
 	if useRelay {
@@ -288,6 +301,38 @@ func (s *Service) JoinByInvite(code, password, relayToken string, self Member) (
 		return s.Join(inv.Name, password, "", self, RelayConfig{Addr: addr, Token: relayToken})
 	}
 	return s.Join(inv.Name, password, inv.Addr, self, RelayConfig{})
+}
+
+// Dropped reports that the current session ended for a reason other than the
+// user leaving — used when the transport underneath dies.
+func (s *Service) Dropped(reason string) {
+	s.mu.Lock()
+	if s.role == RoleNone {
+		s.mu.Unlock()
+		return
+	}
+	host, client := s.host, s.client
+	s.host, s.client = nil, nil
+	s.role = RoleNone
+	s.netName = ""
+	s.networkKey = nil
+	s.members = nil
+	s.invite = ""
+	s.transport = ""
+	s.relayAddr = ""
+	s.listenPort = 0
+	s.publicAddr = ""
+	s.portMapped = false
+	s.lastError = reason
+	s.mu.Unlock()
+
+	if host != nil {
+		host.Stop()
+	}
+	if client != nil {
+		client.Close()
+	}
+	s.emit(s.Status())
 }
 
 func (s *Service) Leave() {

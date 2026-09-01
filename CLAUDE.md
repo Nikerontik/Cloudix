@@ -10,7 +10,27 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
-## Session state (2026-09-11) — branch `relay-server`
+## Session state (2026-09-12) — branch `relay-server`
+
+Relay is deployed and working (messages, reactions). Fixed and added this pass:
+
+- **Stale roster after the host leaves.** `Client.OnClosed` set an error but left
+  `s.members` populated, so peers stayed "online" and messages queued against nobody —
+  which is what produced the clock icons the user saw. It now clears the roster and role;
+  `Service.Dropped` exists for transport-level failures. Covered by `TestMemberSeesHostLeave`.
+- **Calls over the relay need TURN.** Diagnostics showed `peer-ip: (unknown)` and the Mac
+  gathering `host:4` with no srflx. `app.peerIP()` only knows LAN sources, so over the
+  overlay the mDNS rewrite has no address to substitute — but that is secondary: with both
+  peers behind CGNAT, no amount of candidate fixing helps, because neither router accepts
+  unsolicited traffic. ICE servers are now user-configurable (Settings → Calls over the
+  internet, `cloudix:ice` in localStorage) and README documents coturn on the same VPS.
+  **Do not hardcode a TURN server** — same principle as the relay.
+- `.github/workflows/relay.yml` publishes stripped relay binaries plus SHA256SUMS on tag,
+  so servers can be set up with curl instead of scp.
+- Relay reads `CLOUDIX_RELAY_TOKEN` from the environment; the flag leaks the secret to
+  `ps` and `systemctl cat`.
+
+## Older session state (2026-09-11) — branch `relay-server`
 
 `main` holds the pure P2P build (LAN + direct-hosted overlay). This branch adds the
 **optional relay** for people behind CGNAT, who cannot host at all.
