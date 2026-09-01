@@ -35,6 +35,68 @@ const EMOJIS = [
 const sortByTs = (arr) =>
   [...arr].sort((a, b) => (a?.ts || 0) - (b?.ts || 0));
 
+// ---------------------------------------------------------------- screen ---
+// Screen-share encoding profile. Defaults target a LAN: 1080p60 with a high
+// ceiling, because the visible problems were bitrate starvation (blocky video)
+// and the encoder trading framerate away under load.
+const SCREEN_HEIGHTS = [720, 1080, 1440];
+const SCREEN_FPS = [15, 30, 60];
+const SCREEN_MODES = ["balanced", "detail", "motion"];
+const SCREEN_QUALITY_KEY = "cloudix:screen-quality";
+const SCREEN_QUALITY_EVENT = "cloudix:screen-quality-changed";
+
+const DEFAULT_SCREEN_QUALITY = { height: 1080, fps: 60, mode: "balanced", bitrate: 12 };
+
+function loadScreenQuality() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SCREEN_QUALITY_KEY) || "{}");
+    return {
+      height: SCREEN_HEIGHTS.includes(raw.height) ? raw.height : DEFAULT_SCREEN_QUALITY.height,
+      fps: SCREEN_FPS.includes(raw.fps) ? raw.fps : DEFAULT_SCREEN_QUALITY.fps,
+      mode: SCREEN_MODES.includes(raw.mode) ? raw.mode : DEFAULT_SCREEN_QUALITY.mode,
+      bitrate:
+        Number.isFinite(raw.bitrate) && raw.bitrate >= 1 && raw.bitrate <= 30
+          ? raw.bitrate
+          : DEFAULT_SCREEN_QUALITY.bitrate,
+    };
+  } catch {
+    return { ...DEFAULT_SCREEN_QUALITY };
+  }
+}
+
+function saveScreenQuality(quality) {
+  try {
+    localStorage.setItem(SCREEN_QUALITY_KEY, JSON.stringify(quality));
+  } catch {}
+  // Lets an in-progress share pick the change up without renegotiating.
+  window.dispatchEvent(new CustomEvent(SCREEN_QUALITY_EVENT, { detail: quality }));
+}
+
+// "detail" keeps text legible and drops framerate under load; "motion" does the
+// opposite; "balanced" lets the encoder decide.
+function encodingForQuality(quality) {
+  const degradationPreference =
+    quality.mode === "detail"
+      ? "maintain-resolution"
+      : quality.mode === "motion"
+        ? "maintain-framerate"
+        : "balanced";
+  return {
+    degradationPreference,
+    contentHint: quality.mode === "motion" ? "motion" : "detail",
+    encoding: {
+      maxBitrate: Math.round(quality.bitrate * 1000000),
+      maxFramerate: quality.fps,
+      scaleResolutionDownBy: 1,
+      networkPriority: "high",
+      priority: "high",
+    },
+  };
+}
+
+const fmtBitrate = (bps) =>
+  bps >= 1000000 ? `${(bps / 1000000).toFixed(1)} Mbps` : `${Math.round(bps / 1000)} kbps`;
+
 // Guess the platform before first paint so Windows never flashes the macOS
 // window chrome; Environment() confirms it right after mount.
 function guessPlatform() {
@@ -734,6 +796,7 @@ function CallModal({
   const [screenMinimized, setScreenMinimized] = useState(false);
   const [screenExpanded, setScreenExpanded] = useState(false);
   const [screenReady, setScreenReady] = useState(false);
+  const [screenStats, setScreenStats] = useState("");
   const [screenWidth, setScreenWidth] = useState(() => {
     const stored = parseInt(readStored("cloudix:screen-width", "760"), 10);
     return Number.isFinite(stored) ? Math.min(1600, Math.max(320, stored)) : 760;
@@ -772,6 +835,8 @@ function CallModal({
   const screenStageRef = useRef(null);
   const screenVolumeRef = useRef(1);
   const screenWidthRef = useRef(760);
+  const screenVideoSenderRef = useRef(null);
+  const screenQualityRef = useRef(loadScreenQuality());
   const screenX = useMotionValue(0);
   const screenY = useMotionValue(0);
   // Track ids the peer announced as their screen (WebRTC carries no such
@@ -924,6 +989,85 @@ function CallModal({
     screenWidthRef.current = screenWidth;
   }, [screenWidth]);
 
+  // Changing the profile in Settings takes effect on a live share: setParameters
+  // needs no renegotiation.
+  useEffect(() => {
+    const onQuality = (e) => {
+      screenQualityRef.current = e.detail || loadScreenQuality();
+      applyScreenEncoding();
+    };
+    window.addEventListener(SCREEN_QUALITY_EVENT, onQuality);
+    return () => window.removeEventListener(SCREEN_QUALITY_EVENT, onQuality);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Real resolution / framerate / bitrate of the share, so a degraded picture is
+  // visible as numbers instead of guesswork.
+  useEffect(() => {
+    if (!sharing && !remoteScreen) {
+      setScreenStats("");
+      return;
+    }
+    let alive = true;
+    let prevBytes = 0;
+    let prevAt = 0;
+
+    const sample = async () => {
+      const pc = pcRef.current;
+      if (!pc) return;
+      try {
+        const stats = await pc.getStats();
+        const sources = new Map();
+        let report = null;
+
+        stats.forEach((r) => {
+          if (r.type === "media-source") sources.set(r.id, r);
+        });
+
+        stats.forEach((r) => {
+          if (sharing && r.type === "outbound-rtp" && r.kind === "video") {
+            const src = r.mediaSourceId ? sources.get(r.mediaSourceId) : null;
+            const trackId = src?.trackIdentifier;
+            if (!trackId || trackId === screenVideoSenderRef.current?.track?.id) report = r;
+          }
+          if (!sharing && r.type === "inbound-rtp" && r.kind === "video") {
+            if (r.trackIdentifier === screenIdsRef.current.video) report = r;
+          }
+        });
+
+        if (!report) return;
+
+        const bytes = report.bytesSent ?? report.bytesReceived ?? 0;
+        const now = report.timestamp || Date.now();
+        let bps = 0;
+        if (prevAt && now > prevAt) {
+          bps = ((bytes - prevBytes) * 8000) / (now - prevAt);
+        }
+        prevBytes = bytes;
+        prevAt = now;
+
+        const w = report.frameWidth;
+        const h = report.frameHeight;
+        const fps = report.framesPerSecond;
+        const parts = [];
+        if (w && h) parts.push(`${w}×${h}`);
+        if (fps != null) parts.push(`${Math.round(fps)} fps`);
+        if (bps > 0) parts.push(fmtBitrate(bps));
+        if (alive) setScreenStats(parts.join(" · "));
+      } catch {
+        /* stats are best-effort */
+      }
+    };
+
+    sample();
+    const timer = setInterval(sample, 1500);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sharing, remoteScreen]);
+
   useEffect(() => {
     if (!remoteScreen) {
       setScreenReady(false);
@@ -1002,6 +1146,7 @@ function CallModal({
     setScreenMinimized(false);
     setScreenExpanded(false);
     setScreenReady(false);
+    setScreenStats("");
     setDiagOpen(false);
     screenIdsRef.current = { video: "", audio: "" };
     screenSendersRef.current = [];
@@ -1221,17 +1366,44 @@ function CallModal({
     }
   };
 
+  // Sender parameters do not survive a renegotiation, so this is applied both
+  // when the share starts and again after every answer. Losing it was the main
+  // reason the picture turned blocky: the encoder fell back to its default
+  // ceiling, which is far below what a LAN can carry.
+  const applyScreenEncoding = async () => {
+    const sender = screenVideoSenderRef.current;
+    if (!sender) return;
+    const profile = encodingForQuality(screenQualityRef.current);
+    try {
+      const params = sender.getParameters();
+      params.degradationPreference = profile.degradationPreference;
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0] = { ...params.encodings[0], ...profile.encoding };
+      await sender.setParameters(params);
+    } catch (err) {
+      console.warn("screen encoding params not applied", err);
+    }
+    try {
+      if (sender.track) sender.track.contentHint = profile.contentHint;
+    } catch {}
+  };
+
   const startScreenShare = async () => {
     if (sharing || closedRef.current) return;
     const pc = pcRef.current;
     if (!pc) return;
 
+    const quality = loadScreenQuality();
+    screenQualityRef.current = quality;
+
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          frameRate: { ideal: 60, max: 60 },
+          width: { ideal: Math.round((quality.height * 16) / 9) },
+          height: { ideal: quality.height, max: quality.height },
+          frameRate: { ideal: quality.fps, max: quality.fps },
         },
         audio: true,
       });
@@ -1242,21 +1414,10 @@ function CallModal({
       const senders = [];
 
       if (videoTrack) {
-        // "detail" + maintain-resolution keeps text sharp instead of letting
-        // the encoder trade resolution for framerate.
-        try {
-          videoTrack.contentHint = "detail";
-        } catch {}
         const sender = pc.addTrack(videoTrack, stream);
         senders.push(sender);
-        try {
-          const params = sender.getParameters();
-          params.degradationPreference = "maintain-resolution";
-          params.encodings = [{ maxBitrate: 8000000, maxFramerate: 60 }];
-          await sender.setParameters(params);
-        } catch (err) {
-          console.warn("screen encoding params not applied", err);
-        }
+        screenVideoSenderRef.current = sender;
+        await applyScreenEncoding();
         // The OS "stop sharing" bar ends the track directly.
         videoTrack.onended = () => {
           stopScreenShare();
@@ -1294,6 +1455,7 @@ function CallModal({
     const pc = pcRef.current;
     const senders = screenSendersRef.current;
     screenSendersRef.current = [];
+    screenVideoSenderRef.current = null;
 
     senders.forEach((sender) => {
       try {
@@ -1463,6 +1625,7 @@ function CallModal({
         await attachRemoteStream();
         await refreshRemoteVideoUi();
         await refreshScreenUi();
+        await applyScreenEncoding();
       } else if (payload.kind === "ice") {
         if (pc.remoteDescription) {
           try {
@@ -1478,6 +1641,7 @@ function CallModal({
         await attachRemoteStream();
         await refreshRemoteVideoUi();
         await refreshScreenUi();
+        await applyScreenEncoding();
       }
     } catch (err) {
       console.error("Signal handler failed:", err, payload);
@@ -1752,6 +1916,7 @@ function CallModal({
                 <div className="call-sharing-note">
                   <span className="screen-live">live</span>
                   {t.call.sharing}
+                  {screenStats && <span className="call-share-stats">{screenStats}</span>}
                 </div>
               )}
               <div className="call-diag">
@@ -1813,6 +1978,7 @@ function CallModal({
               >
                 <span className="screen-live">live</span>
                 <span className="screen-title">{t.call.screenOf}</span>
+                {screenStats && <span className="screen-stats">{screenStats}</span>}
                 <div className="screen-head-actions">
                   <button
                     type="button"
@@ -2271,6 +2437,13 @@ function SettingsPanel({
 }) {
   const [version, setVersion] = useState("");
   const [dataDir, setDataDir] = useState("");
+  const [screenQuality, setScreenQuality] = useState(loadScreenQuality);
+
+  const updateScreenQuality = (patch) => {
+    const next = { ...screenQuality, ...patch };
+    setScreenQuality(next);
+    saveScreenQuality(next);
+  };
 
   useEffect(() => {
     WailsApp.AppVersion().then(setVersion).catch(() => {});
@@ -2349,6 +2522,60 @@ function SettingsPanel({
       {/* Version + data folder make it obvious which build is running and where
           its local database lives (stale side-by-side installs are otherwise
           invisible). */}
+      <div className="settings-group-title">{t.settings.screenShare}</div>
+      <div className="settings-row">
+        <label>{t.settings.screenResolution}</label>
+        <select
+          value={screenQuality.height}
+          onChange={(e) => updateScreenQuality({ height: Number(e.target.value) })}
+        >
+          {SCREEN_HEIGHTS.map((h) => (
+            <option key={h} value={h}>
+              {h}p
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="settings-row">
+        <label>{t.settings.screenFps}</label>
+        <select
+          value={screenQuality.fps}
+          onChange={(e) => updateScreenQuality({ fps: Number(e.target.value) })}
+        >
+          {SCREEN_FPS.map((f) => (
+            <option key={f} value={f}>
+              {f} fps
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="settings-row">
+        <label>{t.settings.screenMode}</label>
+        <select
+          value={screenQuality.mode}
+          onChange={(e) => updateScreenQuality({ mode: e.target.value })}
+        >
+          <option value="balanced">{t.settings.screenModeBalanced}</option>
+          <option value="detail">{t.settings.screenModeDetail}</option>
+          <option value="motion">{t.settings.screenModeMotion}</option>
+        </select>
+      </div>
+      <div className="settings-row">
+        <label>{t.settings.screenBitrate}</label>
+        <input
+          type="range"
+          min="2"
+          max="30"
+          step="1"
+          value={screenQuality.bitrate}
+          onChange={(e) => updateScreenQuality({ bitrate: Number(e.target.value) })}
+        />
+        <span className="settings-value" style={{ direction: "ltr", maxWidth: 90 }}>
+          {screenQuality.bitrate} Mbps
+        </span>
+      </div>
+      <div className="settings-hint">{t.settings.screenHint}</div>
+
       <div className="settings-group-title">{t.settings.about}</div>
       <div className="settings-row">
         <label>{t.settings.version}</label>

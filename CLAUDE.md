@@ -10,7 +10,32 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
-## Session state (2026-09-05)
+## Session state (2026-09-06)
+
+- **Calls now work** (Mac ↔ Windows, LAN) and screen share works. `main` was fast-forwarded
+  to `dev` at `7cb8c6b`; work continues on `dev`.
+- This pass: screen-share encoding rework — see "Screen share quality" below.
+
+## Screen share quality
+
+The encoder profile is user-configurable (Settings → Screen sharing) and persisted in
+`localStorage` under `cloudix:screen-quality`: resolution (720/1080/1440), framerate
+(15/30/60), priority (balanced / detail / motion) and a bitrate cap (2–30 Mbps, default 12).
+
+Two things mattered for the blocky, stuttering picture:
+
+1. **`setParameters` does not survive a renegotiation.** The cap was applied once at
+   `addTrack` and then silently lost, dropping the encoder back to its default ceiling.
+   `applyScreenEncoding()` is now re-applied after every answer as well.
+2. The old profile hard-coded `maintain-resolution` + `contentHint: "detail"`, which
+   spends the framerate first under load. `mode` maps to `degradationPreference` +
+   `contentHint`, so the user picks the tradeoff.
+
+Changing the profile dispatches a `cloudix:screen-quality-changed` window event, so a
+live share picks it up without renegotiating. The viewer panel and the presenter's call
+card show the real `resolution · fps · bitrate` from `getStats()`.
+
+## Older session state (2026-09-05)
 
 **Root cause of the flaky calls found.** Diagnostics from a failed attempt:
 Mac `cand sent:1  cand recv:0 added:0 rejected:0  ice-conn:new  remote-cand:none`,
