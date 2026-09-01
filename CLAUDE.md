@@ -10,7 +10,32 @@ stored in SQLite. Currently a working first version: text messages, media, react
 read receipts, typing indicator, audio/video calls (WebRTC), block list, local "Saved"
 notes, RU/EN i18n, light/dark themes.
 
-## Session state (2026-09-06)
+## Session state (2026-09-07)
+
+- **Intermittent call failure root-caused: TCP connection glare.** Diagnostic showed the
+  Mac stuck in `have-local-offer` with `cand recv: 0` while Windows was `stable` with
+  `cand sent: 9` — the whole Windows→Mac signal stream was gone, not just candidates.
+  Both peers dial each other during call setup; `transport.readLoop` used to close any
+  existing connection when registering a new inbound one, so crossed dials made each side
+  close the socket the other had just chosen to write on. Fixed by keeping both sockets:
+  reads are served by every connection, writes go to the most recent one.
+- Also this pass: encoder-side resolution enforcement, macOS screen-share audio via a
+  loopback device, native save dialog for chat media, 30s call timeout message.
+
+## Known platform limits
+
+- **macOS cannot share system audio.** WebKit's `getDisplayMedia` returns no audio track.
+  The workaround, wired into Settings → Screen sharing → Share audio, is to install a
+  loopback driver (BlackHole etc.), route output into it and select it as the audio
+  source; it is then captured with `getUserMedia` and added to the screen stream.
+- **`getDisplayMedia` ignores resolution constraints on macOS** — it returns the native
+  display size. The resolution setting is therefore enforced encoder-side by computing
+  `scaleResolutionDownBy` from `track.getSettings().height`.
+- **WKWebView ignores the HTML `download` attribute for data: URLs**, which is why the
+  chat download button did nothing on macOS. Media now goes through the bound
+  `SaveMedia(name, dataURL)` method and a native save dialog on both platforms.
+
+## Older session state (2026-09-06)
 
 - **Calls now work** (Mac ↔ Windows, LAN) and screen share works. `main` was fast-forwarded
   to `dev` at `7cb8c6b`; work continues on `dev`.

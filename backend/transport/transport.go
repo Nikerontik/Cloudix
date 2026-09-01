@@ -113,9 +113,15 @@ func (m *Manager) readLoop(conn net.Conn) {
 
 		if env.SenderID != "" && registeredPeerID == "" {
 			m.mu.Lock()
-			if old, exists := m.conns[env.SenderID]; exists && old != conn {
-				_ = old.Close()
-			}
+			// Deliberately does NOT close an existing connection to this peer.
+			// Both sides dial each other during call setup, and when those
+			// dials cross ("glare") each side used to close the very socket
+			// the other had just chosen to write on — the link then died in
+			// one direction until something timed out, which is what made
+			// calls fail intermittently with the caller stuck on an offer
+			// that was never answered. Keeping both sockets costs one extra
+			// fd and always works: reads are served by every connection,
+			// writes go to the most recently registered one.
 			m.conns[env.SenderID] = conn
 			m.mu.Unlock()
 			registeredPeerID = env.SenderID

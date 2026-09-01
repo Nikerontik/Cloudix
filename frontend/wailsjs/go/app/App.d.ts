@@ -40,6 +40,8 @@ export function RemoveManualPeer(arg1:string):Promise<void>;
 
 export function RestartNetworking():Promise<void>;
 
+export function SaveMedia(arg1:string,arg2:string):Promise<string>;
+
 export function SendMessage(arg1:string,arg2:string,arg3:string,arg4:string):Promise<models.Message>;
 
 export function SendPing(arg1:string):Promise<void>;

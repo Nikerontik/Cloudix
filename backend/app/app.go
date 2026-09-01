@@ -3,12 +3,15 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	goruntime "runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -1178,6 +1181,52 @@ func mustMarshalTyping(p models.TypingPayload) string {
 		return `{"isTyping":false}`
 	}
 	return string(b)
+}
+
+// SaveMedia writes a data: URL to a file the user picks. WKWebView ignores the
+// HTML download attribute for data URLs, so the in-chat download button did
+// nothing on macOS; going through a native save dialog works on both platforms.
+// Returns the chosen path, or "" if the user cancelled.
+func (a *App) SaveMedia(suggestedName, dataURL string) (string, error) {
+	if a.ctx == nil {
+		return "", fmt.Errorf("app not started")
+	}
+	if dataURL == "" {
+		return "", fmt.Errorf("no data to save")
+	}
+
+	comma := strings.Index(dataURL, ",")
+	if !strings.HasPrefix(dataURL, "data:") || comma < 0 {
+		return "", fmt.Errorf("unsupported data url")
+	}
+	meta, payload := dataURL[5:comma], dataURL[comma+1:]
+
+	var raw []byte
+	if strings.Contains(meta, ";base64") {
+		decoded, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil {
+			return "", fmt.Errorf("decode media: %w", err)
+		}
+		raw = decoded
+	} else {
+		raw = []byte(payload)
+	}
+
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		DefaultFilename:      suggestedName,
+		CanCreateDirectories: true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("save dialog: %w", err)
+	}
+	if path == "" {
+		return "", nil // cancelled
+	}
+
+	if err := os.WriteFile(path, raw, 0644); err != nil {
+		return "", fmt.Errorf("write %s: %w", path, err)
+	}
+	return path, nil
 }
 
 // AppVersion is shown in Settings so a user can tell at a glance which build

@@ -45,7 +45,15 @@ const SCREEN_MODES = ["balanced", "detail", "motion"];
 const SCREEN_QUALITY_KEY = "cloudix:screen-quality";
 const SCREEN_QUALITY_EVENT = "cloudix:screen-quality-changed";
 
-const DEFAULT_SCREEN_QUALITY = { height: 1080, fps: 60, mode: "balanced", bitrate: 12 };
+const DEFAULT_SCREEN_QUALITY = {
+  height: 1080,
+  fps: 60,
+  mode: "balanced",
+  bitrate: 12,
+  // "" = try the system audio getDisplayMedia offers (Windows); "none" = silent;
+  // anything else is an audio input device id (macOS needs a loopback driver).
+  audioSource: "",
+};
 
 function loadScreenQuality() {
   try {
@@ -58,6 +66,10 @@ function loadScreenQuality() {
         Number.isFinite(raw.bitrate) && raw.bitrate >= 1 && raw.bitrate <= 30
           ? raw.bitrate
           : DEFAULT_SCREEN_QUALITY.bitrate,
+      audioSource:
+        typeof raw.audioSource === "string"
+          ? raw.audioSource
+          : DEFAULT_SCREEN_QUALITY.audioSource,
     };
   } catch {
     return { ...DEFAULT_SCREEN_QUALITY };
@@ -87,7 +99,6 @@ function encodingForQuality(quality) {
     encoding: {
       maxBitrate: Math.round(quality.bitrate * 1000000),
       maxFramerate: quality.fps,
-      scaleResolutionDownBy: 1,
       networkPriority: "high",
       priority: "high",
     },
@@ -698,9 +709,21 @@ function MediaViewer({ item, onClose, t }) {
           <img src={item.mediaData} alt="" className="media-viewer-media" />
         )}
         <div className="media-viewer-actions">
-          <a href={item.mediaData} download={fileName} className="theme-toggle">
+          <button
+            type="button"
+            className="theme-toggle"
+            onClick={async () => {
+              try {
+                const path = await WailsApp.SaveMedia(fileName, item.mediaData);
+                if (path) console.log(t.mediaViewer.saved + path);
+              } catch (err) {
+                console.error("SaveMedia failed:", err);
+                alert(t.mediaViewer.saveError);
+              }
+            }}
+          >
             ⬇ {t.mediaViewer.download}
-          </a>
+          </button>
           <button type="button" className="theme-toggle" onClick={onClose}>
             {t.mediaViewer.close}
           </button>
@@ -836,6 +859,7 @@ function CallModal({
   const screenVolumeRef = useRef(1);
   const screenWidthRef = useRef(760);
   const screenVideoSenderRef = useRef(null);
+  const screenAudioStreamRef = useRef(null);
   const screenQualityRef = useRef(loadScreenQuality());
   const screenX = useMotionValue(0);
   const screenY = useMotionValue(0);
@@ -1132,6 +1156,9 @@ function CallModal({
       screenStreamRef.current?.getTracks().forEach((tr) => tr.stop());
     } catch {}
     try {
+      screenAudioStreamRef.current?.getTracks().forEach((tr) => tr.stop());
+    } catch {}
+    try {
       remoteScreenStreamRef.current?.getTracks().forEach((tr) => tr.stop());
     } catch {}
   };
@@ -1373,20 +1400,52 @@ function CallModal({
   const applyScreenEncoding = async () => {
     const sender = screenVideoSenderRef.current;
     if (!sender) return;
-    const profile = encodingForQuality(screenQualityRef.current);
+    const quality = screenQualityRef.current;
+    const profile = encodingForQuality(quality);
+
+    // getDisplayMedia largely ignores resolution constraints on macOS — it hands
+    // back the native display size — so the resolution setting is enforced
+    // encoder-side instead, which both engines honour.
+    let scale = 1;
+    try {
+      const settings = sender.track?.getSettings?.() || {};
+      if (settings.height && settings.height > quality.height) {
+        scale = settings.height / quality.height;
+      }
+    } catch {}
+
     try {
       const params = sender.getParameters();
       params.degradationPreference = profile.degradationPreference;
       if (!params.encodings || params.encodings.length === 0) {
         params.encodings = [{}];
       }
-      params.encodings[0] = { ...params.encodings[0], ...profile.encoding };
+      params.encodings[0] = {
+        ...params.encodings[0],
+        ...profile.encoding,
+        scaleResolutionDownBy: scale,
+      };
       await sender.setParameters(params);
+      console.log("screen encoding applied", {
+        ...profile.encoding,
+        scaleResolutionDownBy: scale,
+        degradationPreference: profile.degradationPreference,
+        contentHint: profile.contentHint,
+      });
     } catch (err) {
       console.warn("screen encoding params not applied", err);
     }
+
     try {
       if (sender.track) sender.track.contentHint = profile.contentHint;
+    } catch {}
+
+    // Best effort: ask the capture itself to slow down too, so we are not
+    // encoding frames we intend to throw away.
+    try {
+      await sender.track?.applyConstraints?.({
+        frameRate: { ideal: quality.fps, max: quality.fps },
+      });
     } catch {}
   };
 
@@ -1410,8 +1469,31 @@ function CallModal({
       screenStreamRef.current = stream;
 
       const videoTrack = stream.getVideoTracks()[0];
-      const audioTrack = stream.getAudioTracks()[0];
+      let audioTrack = stream.getAudioTracks()[0];
       const senders = [];
+
+      // WebKit cannot hand over system audio via getDisplayMedia, so on macOS
+      // the user routes output into a loopback device (BlackHole and friends)
+      // and picks it here; we capture it like any other input.
+      if (!audioTrack && quality.audioSource && quality.audioSource !== "none") {
+        try {
+          const extra = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              deviceId: { exact: quality.audioSource },
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+            },
+          });
+          audioTrack = extra.getAudioTracks()[0];
+          if (audioTrack) {
+            screenAudioStreamRef.current = extra;
+            stream.addTrack(audioTrack);
+          }
+        } catch (err) {
+          console.warn("screen audio device capture failed", err);
+        }
+      }
 
       if (videoTrack) {
         const sender = pc.addTrack(videoTrack, stream);
@@ -1467,7 +1549,11 @@ function CallModal({
     try {
       screenStreamRef.current?.getTracks().forEach((tr) => tr.stop());
     } catch {}
+    try {
+      screenAudioStreamRef.current?.getTracks().forEach((tr) => tr.stop());
+    } catch {}
     screenStreamRef.current = null;
+    screenAudioStreamRef.current = null;
     setSharing(false);
 
     if (closedRef.current) return;
@@ -1714,6 +1800,18 @@ function CallModal({
     if (phase !== "connected") return;
     const timer = setInterval(() => setSeconds((s) => s + 1), 1000);
     return () => clearInterval(timer);
+  }, [phase]);
+
+  // Without this a call that never negotiates just sits on "calling" forever.
+  useEffect(() => {
+    if (phase !== "calling") return;
+    const timer = setTimeout(() => {
+      if (pcRef.current && pcRef.current.connectionState !== "connected") {
+        setErrorText(t.call.errTimeout);
+      }
+    }, 30000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
   // Live ICE diagnostics. Cross-platform LAN calls fail in ways that are
@@ -2424,6 +2522,7 @@ function ChatWindow({
 }
 
 function SettingsPanel({
+  platform,
   theme,
   setTheme,
   lang,
@@ -2438,6 +2537,18 @@ function SettingsPanel({
   const [version, setVersion] = useState("");
   const [dataDir, setDataDir] = useState("");
   const [screenQuality, setScreenQuality] = useState(loadScreenQuality);
+  const [audioInputs, setAudioInputs] = useState([]);
+
+  useEffect(() => {
+    // Labels are only exposed once mic permission has been granted, which is
+    // why the list can look anonymous before the first call.
+    navigator.mediaDevices
+      ?.enumerateDevices?.()
+      .then((devices) =>
+        setAudioInputs(devices.filter((d) => d.kind === "audioinput"))
+      )
+      .catch(() => {});
+  }, []);
 
   const updateScreenQuality = (patch) => {
     const next = { ...screenQuality, ...patch };
@@ -2574,7 +2685,25 @@ function SettingsPanel({
           {screenQuality.bitrate} Mbps
         </span>
       </div>
+      <div className="settings-row">
+        <label>{t.settings.screenAudio}</label>
+        <select
+          value={screenQuality.audioSource}
+          onChange={(e) => updateScreenQuality({ audioSource: e.target.value })}
+        >
+          <option value="">{t.settings.screenAudioSystem}</option>
+          <option value="none">{t.settings.screenAudioNone}</option>
+          {audioInputs.map((d, i) => (
+            <option key={d.deviceId || i} value={d.deviceId}>
+              {d.label || `Audio input ${i + 1}`}
+            </option>
+          ))}
+        </select>
+      </div>
       <div className="settings-hint">{t.settings.screenHint}</div>
+      {platform === "darwin" && (
+        <div className="settings-hint">{t.settings.screenAudioMacHint}</div>
+      )}
 
       <div className="settings-group-title">{t.settings.about}</div>
       <div className="settings-row">
@@ -3559,6 +3688,7 @@ export default function App() {
 
         {showSettings ? (
           <SettingsPanel
+            platform={platform}
             theme={theme}
             setTheme={setTheme}
             lang={lang}

@@ -51,6 +51,8 @@ const dict = {
     mediaViewer: {
       download: "Скачать",
       close: "Закрыть",
+      saved: "Сохранено: ",
+      saveError: "Не удалось сохранить файл.",
     },
     onboarding: {
       subtitle:
@@ -103,6 +105,7 @@ const dict = {
       errConnect:
         "Не удалось соединиться с собеседником. Проверьте сеть/VPN и повторите попытку.",
       errSignal: "Ошибка обработки сигнала звонка.",
+      errTimeout: "Собеседник не ответил на соединение. Завершите звонок и попробуйте снова.",
     },
     settings: {
       close: "Назад",
@@ -127,6 +130,11 @@ const dict = {
       screenModeMotion: "Плавность (движение)",
       screenBitrate: "Битрейт",
       screenHint: "Применяется сразу, в том числе к идущей демонстрации.",
+      screenAudio: "Звук демонстрации",
+      screenAudioNone: "Без звука",
+      screenAudioSystem: "Системный звук (если поддерживается)",
+      screenAudioMacHint:
+        "macOS не умеет отдавать системный звук напрямую. Установите виртуальное аудиоустройство (например, BlackHole), направьте в него вывод и выберите его здесь.",
       dataFolder: "Папка с данными",
       openFolder: "Открыть",
       dangerZone: "Опасная зона",
@@ -204,6 +212,8 @@ const dict = {
     mediaViewer: {
       download: "Download",
       close: "Close",
+      saved: "Saved to: ",
+      saveError: "Could not save the file.",
     },
     onboarding: {
       subtitle:
@@ -255,6 +265,7 @@ const dict = {
       errSignalSend: "Could not send the signal to the peer. Check your network/VPN.",
       errConnect: "Could not connect to the peer. Check your network/VPN and try again.",
       errSignal: "Failed to process the call signal.",
+      errTimeout: "The peer never completed the connection. End the call and try again.",
     },
     settings: {
       close: "Back",
@@ -279,6 +290,11 @@ const dict = {
       screenModeMotion: "Smoothness (motion)",
       screenBitrate: "Bitrate",
       screenHint: "Applies immediately, including to a share already running.",
+      screenAudio: "Share audio",
+      screenAudioNone: "No audio",
+      screenAudioSystem: "System audio (where supported)",
+      screenAudioMacHint:
+        "macOS cannot hand over system audio directly. Install a virtual audio device (BlackHole, for example), route your output into it and pick it here.",
       dataFolder: "Data folder",
       openFolder: "Open",
       dangerZone: "Danger zone",
