@@ -2139,6 +2139,9 @@ button {
 .onboarding-avatar-pick {
   width: 78px;
   height: 78px;
+  /* A flex child shrinks by default, which turned the circle into an oval as
+     soon as the window got narrow. */
+  flex: 0 0 auto;
   border-radius: 50%;
   border: 2px dashed var(--border-strong);
   display: flex;
@@ -2974,10 +2977,10 @@ button {
    a decorated profile still sits inside whatever theme the viewer picked, and so
    a peer cannot push arbitrary CSS into someone else's client.
 
-   The colour is a translucent wash over the panel rather than a solid fill.
-   That keeps it glassy, lets the theme show through, and — the practical part —
-   means the text on top stays the theme's own colour, so it is legible on light
-   and dark alike without any per-colour contrast juggling.
+   The colour is solid. A translucent wash was tried and looked washed out — the
+   point of picking a colour is to get that colour. Solid means the text on top
+   has to be white regardless of theme, which the palette below is dark enough
+   for in every entry.
 */
 .profile-cover {
   position: relative;
@@ -2996,40 +2999,13 @@ button {
   isolation: isolate;
 }
 
-/* Undecorated profiles keep the plain panel look. */
-.profile-cover[data-bg]:not([data-bg=""]) {
-  background:
-    linear-gradient(
-      135deg,
-      rgba(var(--tint-a), 0.42) 0%,
-      rgba(var(--tint-b), 0.26) 100%
-    ),
-    var(--panel);
-  backdrop-filter: blur(18px) saturate(150%);
-  -webkit-backdrop-filter: blur(18px) saturate(150%);
-  border-color: rgba(var(--tint-a), 0.28);
-}
-
-/* A soft bloom keeps the wash from reading as a flat rectangle. */
-.profile-cover[data-bg]:not([data-bg=""])::before {
-  content: "";
-  position: absolute;
-  inset: -40% -20% auto;
-  height: 140%;
-  pointer-events: none;
-  background: radial-gradient(closest-side, rgba(var(--tint-a), 0.55), transparent 72%);
-  filter: blur(26px);
-  opacity: 0.7;
-  z-index: -2;
-}
-
 /* The pattern layer sits between the colour and the content. */
 .profile-cover::after {
   content: "";
   position: absolute;
   inset: 0;
   pointer-events: none;
-  opacity: 0.32;
+  opacity: 0.5;
   background-image: var(--cover-pattern, none);
   background-size: var(--cover-pattern-size, 32px 32px);
   z-index: -1;
@@ -3040,55 +3016,66 @@ button {
   z-index: 1;
 }
 
-.profile-cover[data-bg="red"]    { --tint-a: 207, 75, 75;  --tint-b: 207, 75, 75; }
-.profile-cover[data-bg="orange"] { --tint-a: 217, 127, 46; --tint-b: 217, 127, 46; }
-.profile-cover[data-bg="purple"] { --tint-a: 130, 89, 204; --tint-b: 130, 89, 204; }
-.profile-cover[data-bg="green"]  { --tint-a: 61, 150, 96;  --tint-b: 61, 150, 96; }
-.profile-cover[data-bg="teal"]   { --tint-a: 47, 150, 145; --tint-b: 47, 150, 145; }
-.profile-cover[data-bg="blue"]   { --tint-a: 63, 127, 204; --tint-b: 63, 127, 204; }
-.profile-cover[data-bg="pink"]   { --tint-a: 204, 91, 149; --tint-b: 204, 91, 149; }
-.profile-cover[data-bg="gray"]   { --tint-a: 107, 114, 124; --tint-b: 107, 114, 124; }
+/* A decorated cover carries its own light text: the colours below are fixed and
+   all dark enough for white, whatever theme the viewer is in. */
+.profile-cover[data-bg]:not([data-bg=""]) {
+  border-color: transparent;
+}
 
-.profile-cover[data-bg="red-gradient"]    { --tint-a: 240, 118, 95; --tint-b: 171, 47, 77; }
-.profile-cover[data-bg="orange-gradient"] { --tint-a: 245, 169, 75; --tint-b: 194, 90, 30; }
-.profile-cover[data-bg="purple-gradient"] { --tint-a: 169, 122, 232; --tint-b: 92, 52, 163; }
-.profile-cover[data-bg="green-gradient"]  { --tint-a: 108, 196, 135; --tint-b: 37, 112, 72; }
-.profile-cover[data-bg="teal-gradient"]   { --tint-a: 86, 196, 189; --tint-b: 28, 111, 118; }
-.profile-cover[data-bg="blue-gradient"]   { --tint-a: 106, 168, 232; --tint-b: 42, 85, 158; }
-.profile-cover[data-bg="pink-gradient"]   { --tint-a: 240, 135, 182; --tint-b: 168, 58, 116; }
-.profile-cover[data-bg="gray-gradient"]   { --tint-a: 144, 153, 165; --tint-b: 74, 81, 91; }
+.profile-cover[data-bg]:not([data-bg=""]) .profile-name,
+.profile-cover[data-bg]:not([data-bg=""]) .profile-status {
+  color: #ffffff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.profile-cover[data-bg="red"]    { background: #cf4b4b; }
+.profile-cover[data-bg="orange"] { background: #d97f2e; }
+.profile-cover[data-bg="purple"] { background: #8259cc; }
+.profile-cover[data-bg="green"]  { background: #3d9660; }
+.profile-cover[data-bg="teal"]   { background: #2f9691; }
+.profile-cover[data-bg="blue"]   { background: #3f7fcc; }
+.profile-cover[data-bg="pink"]   { background: #cc5b95; }
+.profile-cover[data-bg="gray"]   { background: #6b727c; }
+
+.profile-cover[data-bg="red-gradient"]    { background: linear-gradient(135deg, #f0765f 0%, #ab2f4d 100%); }
+.profile-cover[data-bg="orange-gradient"] { background: linear-gradient(135deg, #f5a94b 0%, #c25a1e 100%); }
+.profile-cover[data-bg="purple-gradient"] { background: linear-gradient(135deg, #a97ae8 0%, #5c34a3 100%); }
+.profile-cover[data-bg="green-gradient"]  { background: linear-gradient(135deg, #6cc487 0%, #257048 100%); }
+.profile-cover[data-bg="teal-gradient"]   { background: linear-gradient(135deg, #56c4bd 0%, #1c6f76 100%); }
+.profile-cover[data-bg="blue-gradient"]   { background: linear-gradient(135deg, #6aa8e8 0%, #2a559e 100%); }
+.profile-cover[data-bg="pink-gradient"]   { background: linear-gradient(135deg, #f087b6 0%, #a83a74 100%); }
+.profile-cover[data-bg="gray-gradient"]   { background: linear-gradient(135deg, #9099a5 0%, #4a515b 100%); }
 
 /* Patterns are inline SVG so they scale and tint with one rule each. '#' must be
    percent-encoded inside a data: URI or the URL terminates early. They are drawn
-   in the theme's own text colour via currentColor-like opacity, so they read on
-   a light wash as well as a dark one. */
+   white, to sit on the solid colour above. */
 .profile-cover[data-pattern="dots"] {
-  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='6' cy='6' r='2.5' fill='%23808890'/%3E%3Ccircle cx='18' cy='18' r='2.5' fill='%23808890'/%3E%3C/svg%3E");
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='6' cy='6' r='2.5' fill='%23ffffff' fill-opacity='0.5'/%3E%3Ccircle cx='18' cy='18' r='2.5' fill='%23ffffff' fill-opacity='0.5'/%3E%3C/svg%3E");
   --cover-pattern-size: 24px 24px;
 }
 
 .profile-cover[data-pattern="grid"] {
-  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28'%3E%3Cpath d='M0 0H28M0 14H28M0 0V28M14 0V28' stroke='%23808890' stroke-width='1'/%3E%3C/svg%3E");
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28'%3E%3Cpath d='M0 0H28M0 14H28M0 0V28M14 0V28' stroke='%23ffffff' stroke-opacity='0.35' stroke-width='1'/%3E%3C/svg%3E");
   --cover-pattern-size: 28px 28px;
 }
 
 .profile-cover[data-pattern="waves"] {
-  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='24'%3E%3Cpath d='M0 18c8 0 8-12 16-12s8 12 16 12 8-12 16-12' fill='none' stroke='%23808890' stroke-width='2'/%3E%3C/svg%3E");
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='24'%3E%3Cpath d='M0 18c8 0 8-12 16-12s8 12 16 12 8-12 16-12' fill='none' stroke='%23ffffff' stroke-opacity='0.4' stroke-width='2'/%3E%3C/svg%3E");
   --cover-pattern-size: 48px 24px;
 }
 
 .profile-cover[data-pattern="stars"] {
-  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36'%3E%3Cpath d='M10 3l1.6 4.4L16 9l-4.4 1.6L10 15l-1.6-4.4L4 9l4.4-1.6z' fill='%23808890'/%3E%3Cpath d='M27 20l1.1 3L31 24l-2.9 1.1L27 28l-1.1-2.9L23 24l2.9-1z' fill='%23808890'/%3E%3C/svg%3E");
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36'%3E%3Cpath d='M10 3l1.6 4.4L16 9l-4.4 1.6L10 15l-1.6-4.4L4 9l4.4-1.6z' fill='%23ffffff' fill-opacity='0.45'/%3E%3Cpath d='M27 20l1.1 3L31 24l-2.9 1.1L27 28l-1.1-2.9L23 24l2.9-1z' fill='%23ffffff' fill-opacity='0.35'/%3E%3C/svg%3E");
   --cover-pattern-size: 36px 36px;
 }
 
 .profile-cover[data-pattern="hearts"] {
-  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M11 18S4 13.5 4 9.2A3.7 3.7 0 0 1 11 7a3.7 3.7 0 0 1 7 2.2C18 13.5 11 18 11 18z' fill='%23808890'/%3E%3C/svg%3E");
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M11 18S4 13.5 4 9.2A3.7 3.7 0 0 1 11 7a3.7 3.7 0 0 1 7 2.2C18 13.5 11 18 11 18z' fill='%23ffffff' fill-opacity='0.4'/%3E%3C/svg%3E");
   --cover-pattern-size: 32px 32px;
 }
 
 .profile-cover[data-pattern="rings"] {
-  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Ccircle cx='20' cy='20' r='13' fill='none' stroke='%23808890' stroke-width='2'/%3E%3Ccircle cx='20' cy='20' r='6' fill='none' stroke='%23808890' stroke-width='2'/%3E%3C/svg%3E");
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Ccircle cx='20' cy='20' r='13' fill='none' stroke='%23ffffff' stroke-opacity='0.32' stroke-width='2'/%3E%3Ccircle cx='20' cy='20' r='6' fill='none' stroke='%23ffffff' stroke-opacity='0.24' stroke-width='2'/%3E%3C/svg%3E");
   --cover-pattern-size: 40px 40px;
 }
 
@@ -3683,8 +3670,26 @@ button {
   font-size: 13.5px;
 }
 
-/* Onboarding fields are full width, so the wrapper follows suit there. */
+/* In onboarding the wrapper has to match the fields above and below it, which
+   are taller and rounder than the ones in Settings. */
 .onboarding-field .username-input {
   max-width: none;
   width: 100%;
+  padding: 0 13px;
+  border-radius: var(--radius-md);
+  background: var(--hover);
+}
+
+.onboarding-field .username-input:focus-within {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.onboarding-field .username-input input {
+  padding: 10px 0;
+  font-size: 14px;
+}
+
+.onboarding-field .username-at {
+  font-size: 14px;
 }
