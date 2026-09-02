@@ -19,11 +19,59 @@ const savedStorageKey = (peerId) => "cloudix:saved-messages:" + (peerId || "anon
 // Keep in sync with transport.maxLineBytes on the Go side (base64 inflates ~33%).
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
-// dark -> light -> pink -> dark. "pink" is a light-only pastel theme.
-const THEMES = ["dark", "light", "pink"];
-const THEME_ICON = { dark: "🌙", light: "☀️", pink: "🌸" };
+// Cycled by the title-bar button in this order. "light", "pink" and "mint" are
+// light themes; "dark", "night" and "crimson" are dark ones.
+const THEMES = ["dark", "light", "pink", "night", "crimson", "mint"];
+const THEME_ICON = {
+  dark: "🌙",
+  light: "☀️",
+  pink: "🌸",
+  night: "🌑",
+  crimson: "🌘",
+  mint: "🌿",
+};
 const nextTheme = (current) =>
   THEMES[(THEMES.indexOf(current) + 1 + THEMES.length) % THEMES.length];
+
+// Profile decoration. Only these identifiers ever cross the wire; the colours
+// themselves live in theme.css, so a peer cannot push arbitrary styling into
+// someone else's client and a decorated card still fits the viewer's theme.
+const DECOR_COLORS = ["red", "orange", "purple", "green", "teal", "blue", "pink", "gray"];
+const DECOR_BACKGROUNDS = ["", ...DECOR_COLORS, ...DECOR_COLORS.map((c) => c + "-gradient")];
+const DECOR_PATTERNS = ["", "dots", "grid", "waves", "stars", "hearts", "rings"];
+
+// Swatch previews. These duplicate the theme.css palette on purpose: a <button>
+// background cannot read a rule that is keyed on a data attribute of a sibling.
+const DECOR_SWATCH = {
+  red: "#cf4b4b",
+  orange: "#d97f2e",
+  purple: "#8259cc",
+  green: "#3d9660",
+  teal: "#2f9691",
+  blue: "#3f7fcc",
+  pink: "#cc5b95",
+  gray: "#6b727c",
+  "red-gradient": "linear-gradient(135deg, #f0765f 0%, #ab2f4d 100%)",
+  "orange-gradient": "linear-gradient(135deg, #f5a94b 0%, #c25a1e 100%)",
+  "purple-gradient": "linear-gradient(135deg, #a97ae8 0%, #5c34a3 100%)",
+  "green-gradient": "linear-gradient(135deg, #6cc487 0%, #257048 100%)",
+  "teal-gradient": "linear-gradient(135deg, #56c4bd 0%, #1c6f76 100%)",
+  "blue-gradient": "linear-gradient(135deg, #6aa8e8 0%, #2a559e 100%)",
+  "pink-gradient": "linear-gradient(135deg, #f087b6 0%, #a83a74 100%)",
+  "gray-gradient": "linear-gradient(135deg, #9099a5 0%, #4a515b 100%)",
+};
+
+// A peer chooses these, so treat them as untrusted input: anything not in the
+// list becomes "no decoration" rather than reaching a data attribute.
+const safeBackground = (v) => (DECOR_BACKGROUNDS.includes(v) ? v : "");
+const safePattern = (v) => (DECOR_PATTERNS.includes(v) ? v : "");
+
+const decorColorLabel = (id, t) => {
+  const gradient = id.endsWith("-gradient");
+  const base = gradient ? id.slice(0, -"-gradient".length) : id;
+  const name = t.decor.colors[base] || base;
+  return gradient ? `${name} (${t.decor.gradient})` : name;
+};
 
 const EMOJIS = [
   "😀", "😂", "🥲", "😊", "😍", "🤔", "😎", "🙃",
@@ -122,6 +170,58 @@ function saveScreenQuality(quality) {
   } catch {}
   // Lets an in-progress share pick the change up without renegotiating.
   window.dispatchEvent(new CustomEvent(SCREEN_QUALITY_EVENT, { detail: quality }));
+}
+
+// Audio preferences live in localStorage and are broadcast as window events so
+// an in-progress call can pick them up. This hook is the single reader: the
+// quick picker in the sidebar and the full Settings panel both use it, so a
+// change in one is reflected in the other without either knowing the other
+// exists.
+function useAudioPrefs() {
+  const [micDevice, setMicDevice] = useState(loadMicDevice);
+  const [screenQuality, setScreenQuality] = useState(loadScreenQuality);
+  const [audioInputs, setAudioInputs] = useState([]);
+
+  useEffect(() => {
+    const onMic = (e) => setMicDevice(typeof e.detail === "string" ? e.detail : loadMicDevice());
+    const onQuality = (e) =>
+      setScreenQuality(e.detail && typeof e.detail === "object" ? e.detail : loadScreenQuality());
+    window.addEventListener(MIC_DEVICE_EVENT, onMic);
+    window.addEventListener(SCREEN_QUALITY_EVENT, onQuality);
+    return () => {
+      window.removeEventListener(MIC_DEVICE_EVENT, onMic);
+      window.removeEventListener(SCREEN_QUALITY_EVENT, onQuality);
+    };
+  }, []);
+
+  useEffect(() => {
+    // Labels are only exposed once mic permission has been granted, which is
+    // why the list can look anonymous before the first call. Re-enumerating on
+    // devicechange catches a headset being plugged in mid-session.
+    const refresh = () =>
+      navigator.mediaDevices
+        ?.enumerateDevices?.()
+        .then((devices) => setAudioInputs(devices.filter((d) => d.kind === "audioinput")))
+        .catch(() => {});
+    refresh();
+    navigator.mediaDevices?.addEventListener?.("devicechange", refresh);
+    return () => navigator.mediaDevices?.removeEventListener?.("devicechange", refresh);
+  }, []);
+
+  const updateMicDevice = useCallback((id) => {
+    setMicDevice(id);
+    saveMicDevice(id);
+  }, []);
+
+  const updateScreenQuality = useCallback((patch) => {
+    setScreenQuality((prev) => {
+      const next = { ...prev, ...patch };
+      saveScreenQuality(next);
+      return next;
+    });
+  }, []);
+
+  return { micDevice, screenQuality, audioInputs, updateMicDevice, updateScreenQuality };
 }
 
 // "detail" keeps text legible and drops framerate under load; "motion" does the
@@ -402,6 +502,24 @@ function Onboarding({ onDone, t, theme, setTheme, platform }) {
     }
   };
 
+  // Restoring an exported profile instead of creating one. This is the only
+  // place it is offered: there is nothing to lose here, whereas doing it later
+  // would silently replace an identity the user's contacts already know.
+  const importProfile = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const profile = await WailsApp.ImportProfile();
+      // Null means the file dialog was dismissed, which is not an error.
+      if (profile) onDone(profile);
+    } catch (err) {
+      console.error("ImportProfile failed:", err);
+      setError(String(err?.message || err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="onboarding-root">
       <AppTitlebar platform={platform} t={t} className="onboarding-titlebar" />
@@ -498,6 +616,16 @@ function Onboarding({ onDone, t, theme, setTheme, platform }) {
         >
           {busy ? t.onboarding.creating : t.onboarding.start}
         </motion.button>
+
+        <button
+          type="button"
+          className="onboarding-import"
+          disabled={busy}
+          onClick={importProfile}
+        >
+          ⬆ {t.settings.importProfile}
+        </button>
+        <div className="onboarding-import-hint">{t.settings.importHint}</div>
       </motion.div>
     </div>
   );
@@ -528,6 +656,226 @@ function DisclaimerModal({ onDismiss, t, platform }) {
   );
 }
 
+// One row of the call log. Direction and outcome are separate on purpose: a
+// missed incoming call and a declined outgoing one look nothing alike to the
+// person reading the list.
+function CallLogRow({ entry, onCallBack, t }) {
+  const missed = entry.outcome === "missed";
+  const incoming = entry.direction === "incoming";
+
+  const when = new Date(entry.timestamp);
+  const today = new Date();
+  const yesterday = new Date(today.getTime() - 86400000);
+  const sameDay = (a, b) => a.toDateString() === b.toDateString();
+  const time = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const day = sameDay(when, today)
+    ? t.callLog.today
+    : sameDay(when, yesterday)
+      ? t.callLog.yesterday
+      : when.toLocaleDateString();
+
+  const duration =
+    entry.duration > 0
+      ? `${String(Math.floor(entry.duration / 60)).padStart(2, "0")}:${String(
+          entry.duration % 60
+        ).padStart(2, "0")}`
+      : "";
+
+  const outcomeLabel =
+    entry.outcome === "accepted"
+      ? t.callLog.accepted
+      : entry.outcome === "declined"
+        ? t.callLog.declined
+        : t.callLog.missed;
+
+  return (
+    <div className={"call-row " + (missed ? "missed" : "")}>
+      <span className="call-arrow" aria-hidden="true">
+        {incoming ? "↙" : "↗"}
+      </span>
+      <div className="call-meta">
+        <div className="call-name">{entry.name || entry.peerId}</div>
+        <div className="call-sub">
+          {incoming ? t.callLog.incoming : t.callLog.outgoing} · {outcomeLabel}
+          {duration ? ` · ${duration}` : ""} · {entry.video ? t.callLog.video : t.callLog.audio}
+        </div>
+      </div>
+      <div className="call-when">
+        <span>{day}</span>
+        <span>{time}</span>
+      </div>
+      <button
+        type="button"
+        className="call-again"
+        title={t.callLog.callBack}
+        aria-label={t.callLog.callBack}
+        onClick={() => onCallBack(entry)}
+      >
+        📞
+      </button>
+    </div>
+  );
+}
+
+// Picks the microphone and the screen-share audio source without opening
+// Settings. Both write through the same hook Settings uses, so the two views
+// never disagree and a change reaches a call already in progress.
+function QuickAudio({ t }) {
+  const { micDevice, screenQuality, audioInputs, updateMicDevice, updateScreenQuality } =
+    useAudioPrefs();
+
+  return (
+    <div className="quick-audio">
+      <label className="quick-audio-row">
+        <span className="quick-audio-icon" aria-hidden="true">🎙</span>
+        <select
+          value={micDevice}
+          onChange={(e) => updateMicDevice(e.target.value)}
+          title={t.quickAudio.mic}
+          aria-label={t.quickAudio.mic}
+        >
+          <option value="">{t.settings.micDefault}</option>
+          {audioInputs.map((d, i) => (
+            <option key={d.deviceId || i} value={d.deviceId}>
+              {d.label || `Audio input ${i + 1}`}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="quick-audio-row">
+        <span className="quick-audio-icon" aria-hidden="true">🔊</span>
+        <select
+          value={screenQuality.audioSource}
+          onChange={(e) => updateScreenQuality({ audioSource: e.target.value })}
+          title={t.quickAudio.screenAudio}
+          aria-label={t.quickAudio.screenAudio}
+        >
+          <option value="">{t.settings.screenAudioSystem}</option>
+          <option value="none">{t.settings.screenAudioNone}</option>
+          {audioInputs.map((d, i) => (
+            <option key={d.deviceId || i} value={d.deviceId}>
+              {d.label || `Audio input ${i + 1}`}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
+  );
+}
+
+// The slide-out menu behind the hamburger. Every entry here does something —
+// there are no placeholders for features this app does not have.
+function SideMenu({ open, onClose, profile, onOpenProfile, onOpenCalls, onOpenNetwork,
+  onOpenSettings, netActive, theme, setTheme, onLogout, t }) {
+  // Escape closes it, the same as clicking the scrim.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  const item = (icon, label, onClick, extra = null) => (
+    <button type="button" className="side-menu-item" onClick={onClick}>
+      <span className="side-menu-icon" aria-hidden="true">{icon}</span>
+      <span className="side-menu-label">{label}</span>
+      {extra}
+    </button>
+  );
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          className="side-menu-scrim"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onClick={onClose}
+        >
+          <motion.aside
+            className="side-menu glass-strong"
+            initial={{ x: -300 }}
+            animate={{ x: 0 }}
+            exit={{ x: -300 }}
+            transition={{ type: "spring", stiffness: 300, damping: 30 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="side-menu-profile"
+              onClick={() => {
+                onOpenProfile();
+                onClose();
+              }}
+            >
+              <Avatar name={profile?.name} avatar={profile?.avatar} size="md" />
+              <div className="side-menu-identity">
+                <div className="side-menu-name">{profile?.name || ""}</div>
+                {profile?.username ? (
+                  <div className="side-menu-username">@{profile.username}</div>
+                ) : null}
+              </div>
+            </button>
+
+            <div className="side-menu-divider" />
+
+            {item("👤", t.menu.myProfile, () => {
+              onOpenProfile();
+              onClose();
+            })}
+            {item("📞", t.menu.calls, () => {
+              onOpenCalls();
+              onClose();
+            })}
+            {item(
+              "🌐",
+              t.menu.network,
+              () => {
+                onOpenNetwork();
+                onClose();
+              },
+              netActive ? <span className="side-menu-dot" aria-hidden="true" /> : null
+            )}
+            {item("⚙", t.menu.settings, () => {
+              onOpenSettings();
+              onClose();
+            })}
+            <div className="side-menu-divider" />
+
+            <div className="side-menu-theme">
+              <span className="side-menu-icon" aria-hidden="true">{THEME_ICON[theme]}</span>
+              <span className="side-menu-label">{t.menu.theme}</span>
+              <select value={theme} onChange={(e) => setTheme(e.target.value)}>
+                {THEMES.map((name) => (
+                  <option key={name} value={name}>
+                    {t.theme[name]}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="side-menu-spacer" />
+
+            <button
+              type="button"
+              className="side-menu-item danger"
+              onClick={() => {
+                onClose();
+                onLogout();
+              }}
+            >
+              <span className="side-menu-icon" aria-hidden="true">⏻</span>
+              <span className="side-menu-label">{t.menu.logout}</span>
+            </button>
+          </motion.aside>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
 function Sidebar({
   chats,
   onlinePeers,
@@ -535,7 +883,7 @@ function Sidebar({
   setActiveChat,
   tab,
   setTab,
-  onOpenSettings,
+  onOpenMenu,
   onOpenProfile,
   t,
   myProfile,
@@ -549,11 +897,14 @@ function Sidebar({
   onOpenNetwork,
   onOpenDocs,
   netActive,
+  callLog,
+  onCallBack,
+  onClearCallLog,
 }) {
   // FIX: убраны вкладки "groups"/"channels" по запросу — они никогда не были
   // реализованы и только занимали место. "saved" тоже убрана как отдельная
   // вкладка — теперь это закреплённый чат сверху списка (см. App: savedChatMeta).
-  const tabsOrder = ["all", "online"];
+  const tabsOrder = ["all", "online", "calls"];
 
   // Unread across every chat, so the tab shows new messages even while the
   // "Online" tab is the one being looked at.
@@ -576,7 +927,17 @@ function Sidebar({
       {/* Brand row sits below the mac traffic-light inset, so it never overlaps
           the window controls. */}
       <div className="sidebar-brand">
-        <span className="brand-title">{t.appName}</span>
+        {/* Your own avatar sits with the wordmark; the hamburger took its old
+            place beside the search field. */}
+        <div className="brand-identity">
+          <Avatar
+            name={myProfile?.name}
+            avatar={myProfile?.avatar}
+            size="sm"
+            onClick={() => onOpenProfile(myProfile, true)}
+          />
+          <span className="brand-title">{t.appName}</span>
+        </div>
         <div className="brand-actions">
           <RescanButton t={t} onRescan={onRescan} />
           <ThemeButton theme={theme} setTheme={setTheme} t={t} />
@@ -584,11 +945,17 @@ function Sidebar({
       </div>
 
       <div className="sidebar-header">
-        <Avatar
-          name={myProfile?.name}
-          avatar={myProfile?.avatar}
-          onClick={() => onOpenProfile(myProfile, true)}
-        />
+        <button
+          type="button"
+          className="menu-toggle"
+          title={t.menu.open}
+          aria-label={t.menu.open}
+          onClick={onOpenMenu}
+        >
+          <span />
+          <span />
+          <span />
+        </button>
         <div className="sidebar-search">
           <span className="search-icon">⌕</span>
           <input
@@ -616,11 +983,31 @@ function Sidebar({
                 {totalUnread > 99 ? "99+" : totalUnread}
               </span>
             )}
+            {tb === "calls" && callLog.length > 0 && (
+              <span className="tab-count">{callLog.length}</span>
+            )}
           </button>
         ))}
       </div>
 
-      {tab === "online" ? (
+      {tab === "calls" ? (
+        <div className="chat-list call-list">
+          {callLog.length === 0 ? (
+            <div className="empty-hint">{t.callLog.empty}</div>
+          ) : (
+            <>
+              <div className="call-list-actions">
+                <button type="button" className="call-clear-btn" onClick={onClearCallLog}>
+                  🗑 {t.callLog.clear}
+                </button>
+              </div>
+              {callLog.map((entry) => (
+                <CallLogRow key={entry.id} entry={entry} onCallBack={onCallBack} t={t} />
+              ))}
+            </>
+          )}
+        </div>
+      ) : tab === "online" ? (
         <div className="chat-list">
           {onlinePeers.length === 0 && (
             <div className="empty-hint">
@@ -707,28 +1094,11 @@ function Sidebar({
         </div>
       )}
 
+      {/* Settings moved into the side menu; this space now picks the audio
+          devices, which is what people actually reach for mid-call. */}
+      <QuickAudio t={t} />
+
       <div className="sidebar-footer">
-        <button type="button" className="footer-btn" onClick={onOpenSettings} title={t.settingsBtn}>
-          ⚙<span className="footer-btn-label">{t.settingsBtn}</span>
-        </button>
-        <button
-          type="button"
-          className="footer-btn icon-only"
-          title={t.docs.button}
-          aria-label={t.docs.button}
-          onClick={onOpenDocs}
-        >
-          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.4" />
-            <path
-              d="M6.2 6.1a1.9 1.9 0 1 1 2.3 2.2c-.4.1-.6.4-.6.8v.4"
-              stroke="currentColor"
-              strokeWidth="1.4"
-              strokeLinecap="round"
-            />
-            <circle cx="8" cy="11.6" r="0.85" fill="currentColor" />
-          </svg>
-        </button>
         <button
           type="button"
           className={"footer-btn icon-only " + (netActive ? "net-on" : "")}
@@ -1366,6 +1736,7 @@ function CallModal({
   incomingOffer,
   registerSignalHandler,
   onClose,
+  onOutcome,
   t,
 }) {
   const [phase, setPhase] = useState(isCaller ? "calling" : "ringing");
@@ -1915,6 +2286,9 @@ function CallModal({
       }
       setPhase("connected");
       clearCallError();
+      // The call log needs to know this happened even though the modal, not the
+      // App, is the only place that can tell.
+      onOutcome?.("accepted");
     };
 
     const enterDisconnectedGrace = () => {
@@ -2421,6 +2795,9 @@ function CallModal({
     }
 
     if (payload.kind === "reject" || payload.kind === "end") {
+      // "end" after connecting is a normal hang-up and leaves the outcome
+      // alone; "reject" means the peer turned us down.
+      if (payload.kind === "reject") onOutcome?.("declined");
       cleanupCall(false);
       return;
     }
@@ -2666,6 +3043,7 @@ function CallModal({
   };
 
   const declineCall = () => {
+    onOutcome?.("declined");
     cleanupCall(true, "reject");
   };
 
@@ -3295,6 +3673,18 @@ function ChatWindow({
   );
 }
 
+// Settings are grouped into sections rather than one long scroll: the list had
+// grown past what anyone could scan, and screen-share tuning has nothing to do
+// with the profile it used to sit beneath.
+const SETTINGS_SECTIONS = [
+  { id: "profile", icon: "👤" },
+  { id: "appearance", icon: "🎨" },
+  { id: "audio", icon: "🎧" },
+  { id: "network", icon: "🌐" },
+  { id: "data", icon: "🗂" },
+  { id: "about", icon: "ℹ️" },
+];
+
 function SettingsPanel({
   platform,
   theme,
@@ -3308,13 +3698,17 @@ function SettingsPanel({
   onLogout,
   t,
 }) {
+  const [section, setSection] = useState("profile");
   const [version, setVersion] = useState("");
   const [dataDir, setDataDir] = useState("");
-  const [screenQuality, setScreenQuality] = useState(loadScreenQuality);
-  const [audioInputs, setAudioInputs] = useState([]);
-  const [micDevice, setMicDevice] = useState(loadMicDevice);
-  // Kept as a draft and written only on Save, so it is obvious whether a value
-  // has actually been applied.
+  const [exportNote, setExportNote] = useState("");
+  // One hook, shared with the sidebar's quick picker, so the two views never
+  // disagree and a change reaches a call already in progress.
+  const { micDevice, screenQuality, audioInputs, updateMicDevice, updateScreenQuality } =
+    useAudioPrefs();
+
+  // TURN is kept as a draft and written only on Save, so it is obvious whether
+  // a value has actually been applied.
   const [ice, setIce] = useState(loadIceConfig);
   const [iceSaved, setIceSaved] = useState(loadIceConfig);
   const [iceNote, setIceNote] = useState("");
@@ -3345,28 +3739,6 @@ function SettingsPanel({
     setTimeout(() => setIceNote(""), 2500);
   };
 
-  const updateMicDevice = (id) => {
-    setMicDevice(id);
-    saveMicDevice(id);
-  };
-
-  useEffect(() => {
-    // Labels are only exposed once mic permission has been granted, which is
-    // why the list can look anonymous before the first call.
-    navigator.mediaDevices
-      ?.enumerateDevices?.()
-      .then((devices) =>
-        setAudioInputs(devices.filter((d) => d.kind === "audioinput"))
-      )
-      .catch(() => {});
-  }, []);
-
-  const updateScreenQuality = (patch) => {
-    const next = { ...screenQuality, ...patch };
-    setScreenQuality(next);
-    saveScreenQuality(next);
-  };
-
   useEffect(() => {
     WailsApp.AppVersion().then(setVersion).catch(() => {});
     WailsApp.GetDataDir().then(setDataDir).catch(() => {});
@@ -3381,82 +3753,233 @@ function SettingsPanel({
     }
   };
 
+  const exportProfile = async () => {
+    setExportNote("");
+    try {
+      const path = await WailsApp.ExportProfile();
+      // An empty path means the save dialog was dismissed, which is not an error.
+      if (path) setExportNote(`${t.settings.exportDone} ${path}`);
+    } catch (err) {
+      console.error("ExportProfile failed:", err);
+      setExportNote(String(err?.message || err));
+    }
+  };
+
   return (
     <div className="main-panel glass settings-panel">
-      <div className="close-settings" onClick={onClose}>
-        ‹ {t.settings.close}
-      </div>
-      <div className="settings-title">{t.settings.title}</div>
-
-      <div className="settings-group-title">{t.settings.appearance}</div>
-      <div className="settings-row">
-        <label>{t.settings.theme}</label>
-        <select value={theme} onChange={(e) => setTheme(e.target.value)}>
-          {THEMES.map((name) => (
-            <option key={name} value={name}>
-              {THEME_ICON[name] + "  " + t.theme[name]}
-            </option>
+      <div className="settings-shell">
+        <nav className="settings-nav">
+          <button type="button" className="close-settings" onClick={onClose}>
+            ‹ {t.settings.close}
+          </button>
+          <div className="settings-nav-title">{t.settings.title}</div>
+          {SETTINGS_SECTIONS.map((sec) => (
+            <button
+              key={sec.id}
+              type="button"
+              className={"settings-nav-item " + (section === sec.id ? "active" : "")}
+              onClick={() => setSection(sec.id)}
+            >
+              <span className="settings-nav-icon" aria-hidden="true">{sec.icon}</span>
+              {t.settings.tabs[sec.id]}
+            </button>
           ))}
-        </select>
-      </div>
-      <div className="settings-row">
-        <label>{t.settings.language}</label>
-        <select value={lang} onChange={(e) => setLang(e.target.value)}>
-          <option value="ru">Русский</option>
-          <option value="en">English</option>
-        </select>
-      </div>
+        </nav>
 
-      <div className="settings-group-title">{t.settings.connection}</div>
-      <div className="settings-row">
-        <label>{t.connStatus[connStatus]}</label>
-      </div>
+        <div className="settings-content">
+          {section === "profile" && (
+            <>
+              <div className="settings-group-title">{t.settings.profile}</div>
+              <div className="settings-row">
+                <label>{t.settings.name}</label>
+                <input
+                  type="text"
+                  value={profile.name}
+                  onChange={(e) => save({ ...profile, name: e.target.value })}
+                />
+              </div>
+              <div className="settings-row">
+                <label>{t.settings.nickname}</label>
+                <input
+                  type="text"
+                  value={profile.username}
+                  onChange={(e) => save({ ...profile, username: e.target.value })}
+                />
+              </div>
+              <div className="settings-row">
+                <label>{t.settings.bio}</label>
+                <textarea
+                  value={profile.bio}
+                  onChange={(e) => save({ ...profile, bio: e.target.value })}
+                />
+              </div>
+              <div className="settings-row">
+                <label>{t.settings.peerId}</label>
+                <span className="peer-id-value">{profile.peerId}</span>
+              </div>
 
-      <div className="settings-group-title">{t.settings.profile}</div>
-      <div className="settings-row">
-        <label>{t.settings.name}</label>
-        <input
-          type="text"
-          value={profile.name}
-          onChange={(e) => save({ ...profile, name: e.target.value })}
-        />
-      </div>
-      <div className="settings-row">
-        <label>{t.settings.nickname}</label>
-        <input
-          type="text"
-          value={profile.username}
-          onChange={(e) => save({ ...profile, username: e.target.value })}
-        />
-      </div>
-      <div className="settings-row">
-        <label>{t.settings.bio}</label>
-        <textarea
-          value={profile.bio}
-          onChange={(e) => save({ ...profile, bio: e.target.value })}
-        />
-      </div>
-      <div className="settings-row">
-        <label>{t.settings.peerId}</label>
-        <span className="peer-id-value">{profile.peerId}</span>
-      </div>
+              <div className="settings-group-title">{t.decor.title}</div>
+              <div className="settings-row stacked">
+                <label>{t.decor.background}</label>
+                <div className="decor-swatches">
+                  {DECOR_BACKGROUNDS.map((id) => (
+                    <button
+                      key={id || "none"}
+                      type="button"
+                      className={
+                        "decor-swatch " +
+                        (id ? "" : "none ") +
+                        (safeBackground(profile.background) === id ? "selected" : "")
+                      }
+                      style={id ? { background: DECOR_SWATCH[id] } : undefined}
+                      title={id ? decorColorLabel(id, t) : t.decor.none}
+                      aria-label={id ? decorColorLabel(id, t) : t.decor.none}
+                      onClick={() => save({ ...profile, background: id })}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="settings-row stacked">
+                <label>{t.decor.pattern}</label>
+                <div className="decor-patterns">
+                  {DECOR_PATTERNS.map((id) => (
+                    <button
+                      key={id || "none"}
+                      type="button"
+                      className={
+                        "decor-pattern-btn " +
+                        (safePattern(profile.pattern) === id ? "selected" : "")
+                      }
+                      onClick={() => save({ ...profile, pattern: id })}
+                    >
+                      {t.decor.patterns[id || "none"]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="settings-hint">{t.decor.hint}</div>
+            </>
+          )}
 
-      {/* Version + data folder make it obvious which build is running and where
-          its local database lives (stale side-by-side installs are otherwise
-          invisible). */}
-      <div className="settings-group-title">{t.settings.audio}</div>
-      <div className="settings-row">
-        <label>{t.settings.micDevice}</label>
-        <select value={micDevice} onChange={(e) => updateMicDevice(e.target.value)}>
-          <option value="">{t.settings.micDefault}</option>
-          {audioInputs.map((d, i) => (
-            <option key={d.deviceId || i} value={d.deviceId}>
-              {d.label || `Audio input ${i + 1}`}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="settings-hint">{t.settings.micHint}</div>
+          {section === "appearance" && (
+            <>
+              <div className="settings-group-title">{t.settings.appearance}</div>
+              <div className="settings-row">
+                <label>{t.settings.theme}</label>
+                <select value={theme} onChange={(e) => setTheme(e.target.value)}>
+                  {THEMES.map((name) => (
+                    <option key={name} value={name}>
+                      {THEME_ICON[name] + "  " + t.theme[name]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="settings-row">
+                <label>{t.settings.language}</label>
+                <select value={lang} onChange={(e) => setLang(e.target.value)}>
+                  <option value="ru">Русский</option>
+                  <option value="en">English</option>
+                </select>
+              </div>
+            </>
+          )}
+
+          {section === "audio" && (
+            <>
+              <div className="settings-group-title">{t.settings.audio}</div>
+              <div className="settings-row">
+                <label>{t.settings.micDevice}</label>
+                <select value={micDevice} onChange={(e) => updateMicDevice(e.target.value)}>
+                  <option value="">{t.settings.micDefault}</option>
+                  {audioInputs.map((d, i) => (
+                    <option key={d.deviceId || i} value={d.deviceId}>
+                      {d.label || `Audio input ${i + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="settings-hint">{t.settings.micHint}</div>
+
+              <div className="settings-group-title">{t.settings.screenShare}</div>
+              <div className="settings-row">
+                <label>{t.settings.screenResolution}</label>
+                <select
+                  value={screenQuality.height}
+                  onChange={(e) => updateScreenQuality({ height: Number(e.target.value) })}
+                >
+                  {SCREEN_HEIGHTS.map((h) => (
+                    <option key={h} value={h}>
+                      {h}p
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="settings-row">
+                <label>{t.settings.screenFps}</label>
+                <select
+                  value={screenQuality.fps}
+                  onChange={(e) => updateScreenQuality({ fps: Number(e.target.value) })}
+                >
+                  {SCREEN_FPS.map((f) => (
+                    <option key={f} value={f}>
+                      {f} fps
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="settings-row">
+                <label>{t.settings.screenMode}</label>
+                <select
+                  value={screenQuality.mode}
+                  onChange={(e) => updateScreenQuality({ mode: e.target.value })}
+                >
+                  <option value="balanced">{t.settings.screenModeBalanced}</option>
+                  <option value="detail">{t.settings.screenModeDetail}</option>
+                  <option value="motion">{t.settings.screenModeMotion}</option>
+                </select>
+              </div>
+              <div className="settings-row">
+                <label>{t.settings.screenBitrate}</label>
+                <input
+                  type="range"
+                  min="2"
+                  max="30"
+                  step="1"
+                  value={screenQuality.bitrate}
+                  onChange={(e) => updateScreenQuality({ bitrate: Number(e.target.value) })}
+                />
+                <span className="settings-value" style={{ direction: "ltr", maxWidth: 90 }}>
+                  {screenQuality.bitrate} Mbps
+                </span>
+              </div>
+              <div className="settings-row">
+                <label>{t.settings.screenAudio}</label>
+                <select
+                  value={screenQuality.audioSource}
+                  onChange={(e) => updateScreenQuality({ audioSource: e.target.value })}
+                >
+                  <option value="">{t.settings.screenAudioSystem}</option>
+                  <option value="none">{t.settings.screenAudioNone}</option>
+                  {audioInputs.map((d, i) => (
+                    <option key={d.deviceId || i} value={d.deviceId}>
+                      {d.label || `Audio input ${i + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="settings-hint">{t.settings.screenHint}</div>
+              {platform === "darwin" && (
+                <div className="settings-hint">{t.settings.screenAudioMacHint}</div>
+              )}
+            </>
+          )}
+
+          {section === "network" && (
+            <>
+              <div className="settings-group-title">{t.settings.connection}</div>
+              <div className="settings-row">
+                <label>{t.connStatus[connStatus]}</label>
+              </div>
 
       <div className="settings-group-title">{t.settings.calls}</div>
       <div className="settings-row">
@@ -3498,109 +4021,71 @@ function SettingsPanel({
         </button>
       </div>
       <div className="settings-hint">{t.settings.turnHint}</div>
+            </>
+          )}
 
-      <div className="settings-group-title">{t.settings.screenShare}</div>
-      <div className="settings-row">
-        <label>{t.settings.screenResolution}</label>
-        <select
-          value={screenQuality.height}
-          onChange={(e) => updateScreenQuality({ height: Number(e.target.value) })}
-        >
-          {SCREEN_HEIGHTS.map((h) => (
-            <option key={h} value={h}>
-              {h}p
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="settings-row">
-        <label>{t.settings.screenFps}</label>
-        <select
-          value={screenQuality.fps}
-          onChange={(e) => updateScreenQuality({ fps: Number(e.target.value) })}
-        >
-          {SCREEN_FPS.map((f) => (
-            <option key={f} value={f}>
-              {f} fps
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="settings-row">
-        <label>{t.settings.screenMode}</label>
-        <select
-          value={screenQuality.mode}
-          onChange={(e) => updateScreenQuality({ mode: e.target.value })}
-        >
-          <option value="balanced">{t.settings.screenModeBalanced}</option>
-          <option value="detail">{t.settings.screenModeDetail}</option>
-          <option value="motion">{t.settings.screenModeMotion}</option>
-        </select>
-      </div>
-      <div className="settings-row">
-        <label>{t.settings.screenBitrate}</label>
-        <input
-          type="range"
-          min="2"
-          max="30"
-          step="1"
-          value={screenQuality.bitrate}
-          onChange={(e) => updateScreenQuality({ bitrate: Number(e.target.value) })}
-        />
-        <span className="settings-value" style={{ direction: "ltr", maxWidth: 90 }}>
-          {screenQuality.bitrate} Mbps
-        </span>
-      </div>
-      <div className="settings-row">
-        <label>{t.settings.screenAudio}</label>
-        <select
-          value={screenQuality.audioSource}
-          onChange={(e) => updateScreenQuality({ audioSource: e.target.value })}
-        >
-          <option value="">{t.settings.screenAudioSystem}</option>
-          <option value="none">{t.settings.screenAudioNone}</option>
-          {audioInputs.map((d, i) => (
-            <option key={d.deviceId || i} value={d.deviceId}>
-              {d.label || `Audio input ${i + 1}`}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="settings-hint">{t.settings.screenHint}</div>
-      {platform === "darwin" && (
-        <div className="settings-hint">{t.settings.screenAudioMacHint}</div>
-      )}
+          {section === "data" && (
+            <>
+              <div className="settings-group-title">{t.settings.backup}</div>
+              <div className="settings-row">
+                <label>{t.settings.exportProfile}</label>
+                <button type="button" className="theme-toggle" onClick={exportProfile}>
+                  ⬇ {t.settings.exportProfile}
+                </button>
+              </div>
+              <div className="settings-hint">{t.settings.exportHint}</div>
+              {exportNote && <div className="settings-hint success">{exportNote}</div>}
 
-      <div className="settings-group-title">{t.settings.about}</div>
-      <div className="settings-row">
-        <label>{t.settings.version}</label>
-        <span className="peer-id-value">{version || "…"}</span>
-      </div>
-      <div className="settings-row">
-        <label>{t.settings.dataFolder}</label>
-        <span className="settings-value" title={dataDir}>
-          {dataDir || "…"}
-        </span>
-        <button
-          type="button"
-          className="theme-toggle"
-          onClick={() => WailsApp.OpenDataFolder().catch(() => {})}
-        >
-          📂 {t.settings.openFolder}
-        </button>
-      </div>
+              <div className="settings-group-title">{t.settings.dataFolder}</div>
+              <div className="settings-row">
+                <label>{t.settings.dataFolder}</label>
+                <span className="settings-value" title={dataDir}>
+                  {dataDir || "…"}
+                </span>
+                <button
+                  type="button"
+                  className="theme-toggle"
+                  onClick={() => WailsApp.OpenDataFolder().catch(() => {})}
+                >
+                  📂 {t.settings.openFolder}
+                </button>
+              </div>
 
-      <div className="settings-group-title">{t.settings.dangerZone}</div>
-      <div className="settings-row">
-        <label>{t.settings.logoutHint}</label>
-        <button type="button" className="theme-toggle danger" onClick={onLogout}>
-          {t.settings.logout}
-        </button>
+              <div className="settings-group-title">{t.settings.dangerZone}</div>
+              <div className="settings-row">
+                <label>{t.settings.logoutHint}</label>
+                <button type="button" className="theme-toggle danger" onClick={onLogout}>
+                  {t.settings.logout}
+                </button>
+              </div>
+              <div className="settings-hint">{t.settings.wipeHint}</div>
+            </>
+          )}
+
+          {section === "about" && (
+            <>
+              <div className="settings-group-title">{t.settings.about}</div>
+              <div className="settings-row">
+                <label>{t.settings.version}</label>
+                <span className="peer-id-value">{version || "…"}</span>
+              </div>
+              <div className="settings-row">
+                <label>GitHub</label>
+                <button
+                  type="button"
+                  className="theme-toggle"
+                  onClick={() => BrowserOpenURL(GITHUB_URL)}
+                >
+                  {t.githubBtn}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
 }
-
 function ProfilePanel({
   target,
   isMe,
@@ -3619,6 +4104,8 @@ function ProfilePanel({
     username: target.username || "",
     bio: target.bio || "",
     avatar: target.avatar || null,
+    background: safeBackground(target.background),
+    pattern: safePattern(target.pattern),
   });
   const fileRef = useRef(null);
   const displayName = editing ? draft.name : target.name || target.title;
@@ -3663,7 +4150,11 @@ function ProfilePanel({
           )}
         </div>
 
-        <div className="profile-hero">
+        <div
+          className="profile-cover"
+          data-bg={editing ? draft.background : safeBackground(target.background)}
+          data-pattern={editing ? draft.pattern : safePattern(target.pattern)}
+        >
           <div
             onClick={() => editing && fileRef.current?.click()}
             style={{ cursor: editing ? "pointer" : "default" }}
@@ -3696,6 +4187,45 @@ function ProfilePanel({
             {isBlocked ? t.profile.blockedLabel : t.profile.lastSeen}
           </div>
         </div>
+
+        {editing && isMe && (
+          <div className="decor-editor">
+            <div className="decor-label">{t.decor.background}</div>
+            <div className="decor-swatches">
+              {DECOR_BACKGROUNDS.map((id) => (
+                <button
+                  key={id || "none"}
+                  type="button"
+                  className={
+                    "decor-swatch " +
+                    (id ? "" : "none ") +
+                    (draft.background === id ? "selected" : "")
+                  }
+                  style={id ? { background: DECOR_SWATCH[id] } : undefined}
+                  title={id ? decorColorLabel(id, t) : t.decor.none}
+                  aria-label={id ? decorColorLabel(id, t) : t.decor.none}
+                  onClick={() => setDraft((d) => ({ ...d, background: id }))}
+                />
+              ))}
+            </div>
+
+            <div className="decor-label">{t.decor.pattern}</div>
+            <div className="decor-patterns">
+              {DECOR_PATTERNS.map((id) => (
+                <button
+                  key={id || "none"}
+                  type="button"
+                  className={"decor-pattern-btn " + (draft.pattern === id ? "selected" : "")}
+                  onClick={() => setDraft((d) => ({ ...d, pattern: id }))}
+                >
+                  {t.decor.patterns[id || "none"]}
+                </button>
+              ))}
+            </div>
+
+            <div className="decor-hint">{t.decor.hint}</div>
+          </div>
+        )}
 
         {!isMe && (
           <div className="profile-actions">
@@ -3856,6 +4386,13 @@ export default function App() {
   const [profileIsMe, setProfileIsMe] = useState(false);
   const [mediaChatId, setMediaChatId] = useState(null);
   const [callState, setCallState] = useState(null);
+  const [callLog, setCallLog] = useState([]);
+  const [menuOpen, setMenuOpen] = useState(false);
+  // What is known about the call in progress. The modal owns the connection, so
+  // it reports the outcome; the duration is measured here because only this
+  // scope survives the modal unmounting.
+  const callRecordRef = useRef(null);
+  const startCallRef = useRef(null);
   // NEW: полноэкранный просмотр медиа
   const [viewerItem, setViewerItem] = useState(null);
 
@@ -3945,6 +4482,24 @@ export default function App() {
     }
   }, []);
 
+  const refreshCallLog = useCallback(async () => {
+    try {
+      setCallLog((await WailsApp.GetCallLog()) || []);
+    } catch (err) {
+      console.error("GetCallLog failed:", err);
+    }
+  }, []);
+
+  const clearCallLog = useCallback(async () => {
+    if (!window.confirm(t.callLog.clearConfirm)) return;
+    try {
+      await WailsApp.ClearCallLog();
+      setCallLog([]);
+    } catch (err) {
+      console.error("ClearCallLog failed:", err);
+    }
+  }, [t]);
+
   const refreshVpnStatus = useCallback(async () => {
     try {
       setVpnStatus(await WailsApp.VPNStatus());
@@ -3988,6 +4543,7 @@ export default function App() {
     refreshOnlinePeers();
     refreshChats();
     refreshVpnStatus();
+    refreshCallLog();
 
     const t1 = setTimeout(() => {
       refreshOnlinePeers();
@@ -4092,6 +4648,8 @@ export default function App() {
       refreshOnlinePeers();
     });
 
+    const cancelCalls = EventsOn("calls:update", () => refreshCallLog());
+    const cancelCallsCleared = EventsOn("calls:cleared", () => setCallLog([]));
     const cancelProfileUpdated = EventsOn("profile:updated", () => refreshChats());
     const cancelAccountDeleted = EventsOn("account:deleted", () => refreshChats());
 
@@ -4121,6 +4679,19 @@ export default function App() {
       if (payload.kind === "offer") {
         if (activeCallIdRef.current && activeCallIdRef.current !== payload.callId) {
           WailsApp.SendSignal(payload.peerId, payload.callId, "reject", "", false).catch(() => {});
+          // Turned away because another call is already up. The modal never
+          // opens for this one, so nothing else would ever record it — and a
+          // call the user never even saw is exactly what the log is for.
+          const known = chatsRawRef.current.find((c) => c.peerId === payload.peerId);
+          WailsApp.LogCall(
+            payload.callId,
+            payload.peerId,
+            known?.name || payload.peerId,
+            "incoming",
+            "missed",
+            payload.video === true,
+            0
+          ).catch(() => {});
           return;
         }
 
@@ -4129,6 +4700,16 @@ export default function App() {
 
           const knownChat = chatsRawRef.current.find((c) => c.peerId === payload.peerId);
           const knownPeer = onlinePeersRawRef.current.find((p) => p.peerId === payload.peerId);
+
+          callRecordRef.current = {
+            id: payload.callId,
+            peerId: payload.peerId,
+            name: knownChat?.name || knownPeer?.name || payload.peerId,
+            direction: "incoming",
+            video: payload.video === true,
+            outcome: "missed",
+            connectedAt: 0,
+          };
 
           return {
             target: {
@@ -4208,6 +4789,8 @@ export default function App() {
       cancelReacted?.();
       cancelPing?.();
       cancelVpn?.();
+      cancelCalls?.();
+      cancelCallsCleared?.();
       cancelProfileUpdated?.();
       cancelAccountDeleted?.();
       cancelSignal?.();
@@ -4247,7 +4830,9 @@ export default function App() {
         peer.name || "",
         peer.username || "",
         peer.bio || "",
-        peer.avatar || ""
+        peer.avatar || "",
+        peer.background || "",
+        peer.pattern || ""
       );
       await refreshChats();
       setActiveChat(peer.peerId);
@@ -4421,6 +5006,15 @@ export default function App() {
 
     const callId = "call-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
     const knownPeer = onlinePeersRawRef.current.find((p) => p.peerId === target.peerId);
+    callRecordRef.current = {
+      id: callId,
+      peerId: target.peerId,
+      name: target.name || target.title || target.peerId,
+      direction: "outgoing",
+      video,
+      outcome: "missed",
+      connectedAt: 0,
+    };
     setCallState({
       target: {
         peerId: target.peerId,
@@ -4438,9 +5032,58 @@ export default function App() {
     setProfileTarget(null);
   };
 
+  // The call log renders above this in the tree but calls back into it, so the
+  // reference is handed over rather than the function being hoisted.
+  startCallRef.current = startCall;
+
+  const noteCallOutcome = useCallback((outcome) => {
+    const rec = callRecordRef.current;
+    if (!rec) return;
+    if (outcome === "accepted" && !rec.connectedAt) {
+      rec.connectedAt = Date.now();
+    }
+    // A call that connected stays "accepted" even if it later ends; only a
+    // never-connected call can be declined.
+    if (rec.outcome !== "accepted") rec.outcome = outcome;
+  }, []);
+
+  // Calling back from the log: the entry only stores a name and a peer id, so
+  // whatever is currently known about that peer wins for the avatar and IP.
+  const callBackFromLog = useCallback(
+    (entry) => {
+      const chat = chatsRawRef.current.find((c) => c.peerId === entry.peerId);
+      const peer = onlinePeersRawRef.current.find((p) => p.peerId === entry.peerId);
+      startCallRef.current?.(
+        {
+          peerId: entry.peerId,
+          name: chat?.name || peer?.name || entry.name || entry.peerId,
+          title: chat?.name || peer?.name || entry.name || entry.peerId,
+          avatar: chat?.avatar || peer?.avatar || "",
+        },
+        !!entry.video
+      );
+    },
+    []
+  );
+
   const closeCall = useCallback(() => {
     pendingSignalsRef.current = [];
     setCallState(null);
+
+    const rec = callRecordRef.current;
+    callRecordRef.current = null;
+    if (!rec) return;
+
+    const duration = rec.connectedAt ? Math.round((Date.now() - rec.connectedAt) / 1000) : 0;
+    WailsApp.LogCall(
+      rec.id,
+      rec.peerId,
+      rec.name,
+      rec.direction,
+      rec.outcome,
+      !!rec.video,
+      duration
+    ).catch((err) => console.error("LogCall failed:", err));
   }, []);
 
   const logout = async () => {
@@ -4469,6 +5112,8 @@ export default function App() {
     setCallState(null);
     setTypingByPeer({});
     setSavedMessages([]);
+    setCallLog([]);
+    setMenuOpen(false);
   };
 
   const chatsList = useMemo(() => {
@@ -4495,6 +5140,8 @@ export default function App() {
       username: c?.username || "",
       bio: c?.bio || "",
       avatar: c?.avatar || "",
+      background: c?.background || "",
+      pattern: c?.pattern || "",
       preview: c?.lastMessage || "",
       deleted: !!c?.accountDeleted,
       peerId: c?.peerId || "",
@@ -4551,7 +5198,7 @@ export default function App() {
           }}
           tab={tab}
           setTab={setTab}
-          onOpenSettings={() => setShowSettings(true)}
+          onOpenMenu={() => setMenuOpen(true)}
           onOpenProfile={openProfile}
           t={t}
           myProfile={profile}
@@ -4565,6 +5212,27 @@ export default function App() {
           onOpenNetwork={() => setShowNetwork(true)}
           onOpenDocs={() => setShowDocs(true)}
           netActive={!!vpnStatus?.active}
+          callLog={callLog}
+          onCallBack={callBackFromLog}
+          onClearCallLog={clearCallLog}
+        />
+
+        <SideMenu
+          open={menuOpen}
+          onClose={() => setMenuOpen(false)}
+          profile={profile}
+          onOpenProfile={() => openProfile(profile, true)}
+          onOpenCalls={() => {
+            setTab("calls");
+            setShowSettings(false);
+          }}
+          onOpenNetwork={() => setShowNetwork(true)}
+          onOpenSettings={() => setShowSettings(true)}
+          netActive={!!vpnStatus?.active}
+          theme={theme}
+          setTheme={setTheme}
+          onLogout={logout}
+          t={t}
         />
 
         {showSettings ? (
@@ -4607,6 +5275,10 @@ export default function App() {
       <AnimatePresence>
         {profileTarget && (
           <ProfilePanel
+            // The draft (name, bio, decoration) is seeded from the target once,
+            // so switching profiles has to remount rather than reuse the state
+            // of the one before it.
+            key={profileIsMe ? "me" : profileTarget.peerId || profileTarget.id}
             target={profileIsMe ? profile : profileTarget}
             isMe={profileIsMe}
             isBlocked={
@@ -4664,6 +5336,7 @@ export default function App() {
             isCaller={callState.isCaller}
             callId={callState.callId}
             incomingOffer={callState.incomingOffer}
+            onOutcome={noteCallOutcome}
             registerSignalHandler={registerSignalHandler}
             onClose={closeCall}
             t={t}
