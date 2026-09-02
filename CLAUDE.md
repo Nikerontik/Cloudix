@@ -24,8 +24,16 @@ Three ways two people can reach each other:
 | Branch | Commit | Contents |
 |---|---|---|
 | `main` | `2ac6e18` | Pure P2P: LAN + direct-hosted overlay. No relay. |
-| `dev` | `2ac6e18` | Same as main. |
-| `relay-server` | `d091e97` | **Active branch.** Adds the optional relay server. |
+| `dev` | off `relay-server` | **Active branch.** Relay + version 1.0 UI work. |
+| `relay-server` | `d091e97` | The relay server itself. |
+| `mobile` | `ee5f811` | iOS + Android, off `relay-server`. |
+
+The iOS build is **confirmed working on a device**; the Android APK builds and its
+contents verify but **has not been run on a device yet**. Full detail lives in
+CLAUDE.md on the `mobile` branch. Two things from there matter even when working
+here, because `dev` eventually merges into it: `backend/app` imports no Wails on
+that branch (the platform sits behind `app.Host`), and **every exported method of
+`*App` becomes a Wails binding**, so never add one for internal wiring.
 
 Working and confirmed by the user: messages, media, reactions, screen sharing, and
 **calls across different networks** (which turned out not to need TURN in their case).
@@ -33,6 +41,53 @@ The relay is deployed on their VPS and carries messages.
 
 TURN is implemented and configurable but the user has not needed it yet; coturn setup is
 documented in the README for the case where both peers are behind CGNAT.
+
+## Version 1.0 UI (2026-09-02, on `dev`)
+
+**Six themes.** `night` (near-black, OLED), `crimson` ("Crimson Moon"), `mint`
+(pastel green) joined dark/light/pink. Crimson animates only its *backdrop* glow
+via `crimson-drift`; panel colours stay fixed so text contrast never moves.
+
+**Profile decoration.** `models.Profile.Background` / `.Pattern` — 8 colours,
+each also as a gradient, plus 6 patterns. **Only short identifiers cross the
+wire; the palette lives in theme.css.** A peer must not be able to push arbitrary
+styling into someone else's client, and a decorated card should still fit the
+viewer's theme. `safeBackground()` / `safePattern()` reject anything off-list
+before it reaches a data attribute. Decoration rides the LAN announce,
+`profile_update` and `avatar_response`.
+
+`storage.UpsertChatMeta` / `UpsertChatMetaIfExists` take a `models.ChatMeta`
+struct rather than five loose strings, so the next field costs one call site.
+
+**Call log** (`call_log` table, `LogCall` / `GetCallLog` / `ClearCallLog`) is a
+third sidebar tab. The frontend owns call state, so `CallModal` reports the
+outcome through `onOutcome` and App measures the duration — the modal unmounts,
+that scope does not — writing one row in `closeCall`. A call turned away because
+another is already up is logged as missed *where it is rejected*: no modal opens
+for it, so nothing else would ever record it.
+
+**Chrome moved.** Avatar sits beside the wordmark; a hamburger took its old place
+and opens `SideMenu`. Settings and the docs panel left the sidebar footer for
+that menu, and the footer now picks the mic and screen-share audio source. Those
+pickers and Settings share one `useAudioPrefs()` hook — that is what keeps them
+in sync both ways and lets a change reach a call in progress.
+
+**Settings are sectioned** (profile / appearance / audio / network / data /
+about); TURN lives under *network*. Below 900px the nav rail becomes a scrolling
+icon strip.
+
+**Profile export/import.** `ExportProfile` writes a versioned JSON wrapper,
+`ImportProfile` reads one. **The peer id is in the export on purpose** —
+contacts recognise you by it and there is no account server. Import is offered
+*only* in onboarding; later it would silently replace an identity others know.
+
+`backend/storage/storage_test.go` is new: decoration round trip, call-log
+ordering and idempotent insert, migration from a pre-decoration database, and
+`TestWipeAllLeavesNothing` — deleting the account really leaves no profile, no
+chats, no call log. `storage.SetDataDir` (copied verbatim from `mobile` so the
+two do not conflict) is what makes those tests possible.
+
+**Not yet exercised in the running app.**
 
 ## Build / run
 
