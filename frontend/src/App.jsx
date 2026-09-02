@@ -767,7 +767,7 @@ function QuickAudio({ t }) {
 // The slide-out menu behind the hamburger. Every entry here does something —
 // there are no placeholders for features this app does not have.
 function SideMenu({ open, onClose, profile, onOpenProfile, onOpenCalls, onOpenNetwork,
-  onOpenSettings, netActive, theme, setTheme, onLogout, t }) {
+  onOpenSettings, onOpenDocs, netActive, theme, setTheme, onLogout, t }) {
   // Escape closes it, the same as clicking the scrim.
   useEffect(() => {
     if (!open) return;
@@ -842,6 +842,10 @@ function SideMenu({ open, onClose, profile, onOpenProfile, onOpenCalls, onOpenNe
               onOpenSettings();
               onClose();
             })}
+            {item("❔", t.docs.button, () => {
+              onOpenDocs();
+              onClose();
+            })}
             <div className="side-menu-divider" />
 
             <div className="side-menu-theme">
@@ -895,7 +899,6 @@ function Sidebar({
   setTheme,
   onRescan,
   onOpenNetwork,
-  onOpenDocs,
   netActive,
   callLog,
   onCallBack,
@@ -5210,7 +5213,6 @@ export default function App() {
           setTheme={setTheme}
           onRescan={rescanPeers}
           onOpenNetwork={() => setShowNetwork(true)}
-          onOpenDocs={() => setShowDocs(true)}
           netActive={!!vpnStatus?.active}
           callLog={callLog}
           onCallBack={callBackFromLog}
@@ -5228,6 +5230,7 @@ export default function App() {
           }}
           onOpenNetwork={() => setShowNetwork(true)}
           onOpenSettings={() => setShowSettings(true)}
+          onOpenDocs={() => setShowDocs(true)}
           netActive={!!vpnStatus?.active}
           theme={theme}
           setTheme={setTheme}
