@@ -1,11 +1,39 @@
 export namespace models {
 	
+	export class CallEntry {
+	    id: string;
+	    peerId: string;
+	    name: string;
+	    direction: string;
+	    outcome: string;
+	    video: boolean;
+	    duration: number;
+	    ts: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CallEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.peerId = source["peerId"];
+	        this.name = source["name"];
+	        this.direction = source["direction"];
+	        this.outcome = source["outcome"];
+	        this.video = source["video"];
+	        this.duration = source["duration"];
+	        this.ts = source["ts"];
+	    }
+	}
 	export class Chat {
 	    peerId: string;
 	    name: string;
 	    username: string;
 	    bio: string;
 	    avatar: string;
+	    background: string;
+	    pattern: string;
 	    accountDeleted: boolean;
 	    lastMessage: string;
 	    lastTimestamp: number;
@@ -22,6 +50,8 @@ export namespace models {
 	        this.username = source["username"];
 	        this.bio = source["bio"];
 	        this.avatar = source["avatar"];
+	        this.background = source["background"];
+	        this.pattern = source["pattern"];
 	        this.accountDeleted = source["accountDeleted"];
 	        this.lastMessage = source["lastMessage"];
 	        this.lastTimestamp = source["lastTimestamp"];
@@ -70,6 +100,8 @@ export namespace models {
 	    username: string;
 	    bio: string;
 	    avatar: string;
+	    background: string;
+	    pattern: string;
 	    ip: string;
 	    port: number;
 	    lastSeen: number;
@@ -86,6 +118,8 @@ export namespace models {
 	        this.username = source["username"];
 	        this.bio = source["bio"];
 	        this.avatar = source["avatar"];
+	        this.background = source["background"];
+	        this.pattern = source["pattern"];
 	        this.ip = source["ip"];
 	        this.port = source["port"];
 	        this.lastSeen = source["lastSeen"];
@@ -98,6 +132,8 @@ export namespace models {
 	    username: string;
 	    bio: string;
 	    avatar: string;
+	    background: string;
+	    pattern: string;
 	    createdAt: number;
 	
 	    static createFrom(source: any = {}) {
@@ -111,6 +147,8 @@ export namespace models {
 	        this.username = source["username"];
 	        this.bio = source["bio"];
 	        this.avatar = source["avatar"];
+	        this.background = source["background"];
+	        this.pattern = source["pattern"];
 	        this.createdAt = source["createdAt"];
 	    }
 	}

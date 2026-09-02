@@ -28,7 +28,11 @@ type announcePacket struct {
 	Name     string `json:"name"`
 	Username string `json:"username"`
 	Bio      string `json:"bio"` // FIX: bio теперь едет прямо в анонсе, а не только через отдельный avatar-обмен
-	TCPPort  int    `json:"tcpPort"`
+	// Decoration identifiers are a handful of bytes, so they ride the announce
+	// too and a peer's card looks right before the avatar exchange completes.
+	Background string `json:"background,omitempty"`
+	Pattern    string `json:"pattern,omitempty"`
+	TCPPort    int    `json:"tcpPort"`
 }
 
 type Service struct {
@@ -225,25 +229,32 @@ func (s *Service) processAnnouncePacket(buf []byte, n int, srcIP net.IP) {
 	s.mu.Lock()
 	existing, ok := s.peers[pkt.PeerID]
 	if ok {
-		if existing.Name != pkt.Name || existing.Username != pkt.Username || existing.Bio != pkt.Bio || existing.IP != srcIP.String() || existing.Port != pkt.TCPPort {
+		if existing.Name != pkt.Name || existing.Username != pkt.Username ||
+			existing.Bio != pkt.Bio || existing.Background != pkt.Background ||
+			existing.Pattern != pkt.Pattern || existing.IP != srcIP.String() ||
+			existing.Port != pkt.TCPPort {
 			changed = true
 		}
 		existing.Name = pkt.Name
 		existing.Username = pkt.Username
 		existing.Bio = pkt.Bio
+		existing.Background = pkt.Background
+		existing.Pattern = pkt.Pattern
 		existing.IP = srcIP.String()
 		existing.Port = pkt.TCPPort
 		existing.LastSeen = now
 	} else {
 		isNew = true
 		newPeer := &models.Peer{
-			PeerID:   pkt.PeerID,
-			Name:     pkt.Name,
-			Username: pkt.Username,
-			Bio:      pkt.Bio,
-			IP:       srcIP.String(),
-			Port:     pkt.TCPPort,
-			LastSeen: now,
+			PeerID:     pkt.PeerID,
+			Name:       pkt.Name,
+			Username:   pkt.Username,
+			Bio:        pkt.Bio,
+			Background: pkt.Background,
+			Pattern:    pkt.Pattern,
+			IP:         srcIP.String(),
+			Port:       pkt.TCPPort,
+			LastSeen:   now,
 		}
 		if stale, staleOk := s.stalePeers[pkt.PeerID]; staleOk {
 			if newPeer.Avatar == "" {
@@ -376,11 +387,13 @@ func (s *Service) announceLoop(stop <-chan struct{}, groupAddr *net.UDPAddr) {
 			return
 		}
 		pkt := announcePacket{
-			PeerID:   profile.PeerID,
-			Name:     profile.Name,
-			Username: profile.Username,
-			Bio:      profile.Bio,
-			TCPPort:  s.tcpPort,
+			PeerID:     profile.PeerID,
+			Name:       profile.Name,
+			Username:   profile.Username,
+			Bio:        profile.Bio,
+			Background: profile.Background,
+			Pattern:    profile.Pattern,
+			TCPPort:    s.tcpPort,
 		}
 		data, err := json.Marshal(pkt)
 		if err != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -17,9 +18,33 @@ type Store struct {
 	path string
 }
 
+// baseDir pins the data directory when something other than the OS convention
+// decides where it lives — tests here, and the app sandbox on mobile, where
+// os.UserConfigDir() means nothing. Kept identical to the `mobile` branch so the
+// two do not conflict on merge.
+var (
+	baseMu  sync.RWMutex
+	baseDir string
+)
+
+// SetDataDir pins where the database lives. Call it before Open().
+func SetDataDir(dir string) {
+	baseMu.Lock()
+	baseDir = dir
+	baseMu.Unlock()
+}
+
 // DataDir is where the profile/chat database lives. Override the app-name
 // suffix with CLOUDIX_INSTANCE to run a second instance side by side.
 func DataDir() string {
+	baseMu.RLock()
+	pinned := baseDir
+	baseMu.RUnlock()
+	if pinned != "" {
+		_ = os.MkdirAll(pinned, 0755)
+		return pinned
+	}
+
 	dir, _ := os.UserConfigDir()
 	appName := "Cloudix"
 	if suffix := os.Getenv("CLOUDIX_INSTANCE"); suffix != "" {
@@ -121,6 +146,24 @@ CREATE TABLE IF NOT EXISTS vpn_pins (
 );
 
 
+-- Call log. Kept locally only: there is no server to reconcile it with, and a
+-- peer's view of the same call is their own row.
+CREATE TABLE IF NOT EXISTS call_log (
+    id TEXT PRIMARY KEY,
+    peer_id TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    direction TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    video INTEGER DEFAULT 0,
+    duration INTEGER DEFAULT 0,
+    ts INTEGER NOT NULL
+);
+
+
+CREATE INDEX IF NOT EXISTS idx_call_log_ts
+    ON call_log(ts DESC);
+
+
 CREATE INDEX IF NOT EXISTS idx_messages_chat_ts
     ON messages(chat_id, ts);
 
@@ -152,6 +195,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_id
 	// старых строк значение 1.
 	_, _ = s.db.Exec(`ALTER TABLE messages ADD COLUMN delivered INTEGER DEFAULT 1`)
 
+	// Profile decoration. Short identifiers, not colour literals — the palette
+	// lives in theme.css so a decorated profile still follows the active theme.
+	_, _ = s.db.Exec(`ALTER TABLE profile ADD COLUMN background TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE profile ADD COLUMN pattern TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE chats ADD COLUMN background TEXT DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE chats ADD COLUMN pattern TEXT DEFAULT ''`)
+
 	return nil
 }
 
@@ -163,8 +213,9 @@ func (s *Store) SaveProfile(p models.Profile) error {
 		return err
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO profile (peer_id,name,username,bio,avatar,created_at) VALUES (?,?,?,?,?,?)`,
-		p.PeerID, p.Name, p.Username, p.Bio, p.Avatar, p.CreatedAt,
+		`INSERT INTO profile (peer_id,name,username,bio,avatar,background,pattern,created_at)
+         VALUES (?,?,?,?,?,?,?,?)`,
+		p.PeerID, p.Name, p.Username, p.Bio, p.Avatar, p.Background, p.Pattern, p.CreatedAt,
 	)
 	return err
 }
@@ -173,9 +224,11 @@ func (s *Store) LoadProfile() (*models.Profile, error) {
 	if s.db == nil {
 		return nil, fmt.Errorf("db not initialized")
 	}
-	row := s.db.QueryRow(`SELECT peer_id,name,username,bio,avatar,created_at FROM profile LIMIT 1`)
+	row := s.db.QueryRow(`SELECT peer_id,name,username,bio,avatar,
+        COALESCE(background,''),COALESCE(pattern,''),created_at FROM profile LIMIT 1`)
 	var p models.Profile
-	if err := row.Scan(&p.PeerID, &p.Name, &p.Username, &p.Bio, &p.Avatar, &p.CreatedAt); err != nil {
+	if err := row.Scan(&p.PeerID, &p.Name, &p.Username, &p.Bio, &p.Avatar,
+		&p.Background, &p.Pattern, &p.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -184,19 +237,21 @@ func (s *Store) LoadProfile() (*models.Profile, error) {
 	return &p, nil
 }
 
-func (s *Store) UpsertChatMeta(peerID, name, username, bio, avatar string) error {
+func (s *Store) UpsertChatMeta(m models.ChatMeta) error {
 	if s.db == nil {
 		return fmt.Errorf("db not initialized")
 	}
 	_, err := s.db.Exec(`
-        INSERT INTO chats (peer_id,name,username,bio,avatar,last_message,last_timestamp,account_deleted)
-        VALUES (?,?,?,?,?,'',0,0)
+        INSERT INTO chats (peer_id,name,username,bio,avatar,background,pattern,last_message,last_timestamp,account_deleted)
+        VALUES (?,?,?,?,?,?,?,'',0,0)
         ON CONFLICT(peer_id) DO UPDATE SET
             name=excluded.name,
             username=excluded.username,
             bio=excluded.bio,
-            avatar=excluded.avatar
-    `, peerID, name, username, bio, avatar)
+            avatar=excluded.avatar,
+            background=excluded.background,
+            pattern=excluded.pattern
+    `, m.PeerID, m.Name, m.Username, m.Bio, m.Avatar, m.Background, m.Pattern)
 	return err
 }
 
@@ -214,15 +269,15 @@ func (s *Store) UpsertChatMetaIfMissing(peerID string) error {
 	return err
 }
 
-func (s *Store) UpsertChatMetaIfExists(peerID, name, username, bio, avatar string) error {
+func (s *Store) UpsertChatMetaIfExists(m models.ChatMeta) error {
 	if s.db == nil {
 		return fmt.Errorf("db not initialized")
 	}
 	_, err := s.db.Exec(`
         UPDATE chats
-        SET name=?, username=?, bio=?, avatar=?
+        SET name=?, username=?, bio=?, avatar=?, background=?, pattern=?
         WHERE peer_id=?
-    `, name, username, bio, avatar, peerID)
+    `, m.Name, m.Username, m.Bio, m.Avatar, m.Background, m.Pattern, m.PeerID)
 	return err
 }
 
@@ -276,6 +331,8 @@ func (s *Store) ListChats(myPeerID string) ([]models.Chat, error) {
             c.username,
             c.bio,
             c.avatar,
+            COALESCE(c.background, ''),
+            COALESCE(c.pattern, ''),
             c.account_deleted,
             COALESCE(c.last_message, ''),
             COALESCE(c.last_timestamp, 0),
@@ -306,6 +363,8 @@ func (s *Store) ListChats(myPeerID string) ([]models.Chat, error) {
 			&c.Username,
 			&c.Bio,
 			&c.Avatar,
+			&c.Background,
+			&c.Pattern,
 			&deleted,
 			&c.LastMessage,
 			&c.LastTimestamp,
@@ -686,6 +745,67 @@ func (s *Store) Close() error {
 	}
 	err := s.db.Close()
 	s.db = nil
+	return err
+}
+
+// InsertCall records one finished call. The log is local: there is no server to
+// reconcile it against, and the peer keeps their own row for the same call.
+func (s *Store) InsertCall(e models.CallEntry) error {
+	if s.db == nil {
+		return fmt.Errorf("db not initialized")
+	}
+	video := 0
+	if e.Video {
+		video = 1
+	}
+	_, err := s.db.Exec(`
+        INSERT INTO call_log (id,peer_id,name,direction,outcome,video,duration,ts)
+        VALUES (?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET
+            outcome=excluded.outcome,
+            duration=excluded.duration
+    `, e.ID, e.PeerID, e.Name, e.Direction, e.Outcome, video, e.Duration, e.Timestamp)
+	return err
+}
+
+// ListCalls returns the log newest first. limit <= 0 means "everything".
+func (s *Store) ListCalls(limit int) ([]models.CallEntry, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("db not initialized")
+	}
+	query := `SELECT id,peer_id,COALESCE(name,''),direction,outcome,video,duration,ts
+              FROM call_log ORDER BY ts DESC`
+	args := []interface{}{}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []models.CallEntry{}
+	for rows.Next() {
+		var e models.CallEntry
+		var video int
+		if err := rows.Scan(&e.ID, &e.PeerID, &e.Name, &e.Direction,
+			&e.Outcome, &video, &e.Duration, &e.Timestamp); err != nil {
+			return nil, err
+		}
+		e.Video = video == 1
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ClearCalls empties the log.
+func (s *Store) ClearCalls() error {
+	if s.db == nil {
+		return fmt.Errorf("db not initialized")
+	}
+	_, err := s.db.Exec(`DELETE FROM call_log`)
 	return err
 }
 

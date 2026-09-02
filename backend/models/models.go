@@ -42,23 +42,31 @@ const (
 )
 
 type Profile struct {
-	PeerID    string `json:"peerId"`
-	Name      string `json:"name"`
-	Username  string `json:"username"`
-	Bio       string `json:"bio"`
-	Avatar    string `json:"avatar"`
-	CreatedAt int64  `json:"createdAt"`
-}
-
-type Peer struct {
 	PeerID   string `json:"peerId"`
 	Name     string `json:"name"`
 	Username string `json:"username"`
 	Bio      string `json:"bio"`
 	Avatar   string `json:"avatar"`
-	IP       string `json:"ip"`
-	Port     int    `json:"port"`
-	LastSeen int64  `json:"lastSeen"`
+	// Background and Pattern decorate the profile card and travel with the
+	// profile, so a peer sees the same header the owner chose. Both are short
+	// identifiers ("teal", "gradient-rose", "bottles"), never colour literals —
+	// the actual colours live in theme.css and follow the active theme.
+	Background string `json:"background"`
+	Pattern    string `json:"pattern"`
+	CreatedAt  int64  `json:"createdAt"`
+}
+
+type Peer struct {
+	PeerID     string `json:"peerId"`
+	Name       string `json:"name"`
+	Username   string `json:"username"`
+	Bio        string `json:"bio"`
+	Avatar     string `json:"avatar"`
+	Background string `json:"background"`
+	Pattern    string `json:"pattern"`
+	IP         string `json:"ip"`
+	Port       int    `json:"port"`
+	LastSeen   int64  `json:"lastSeen"`
 	// ViaVPN marks a peer reached through the overlay network rather than the
 	// local network, so the UI can label it.
 	ViaVPN bool `json:"viaVpn,omitempty"`
@@ -86,6 +94,8 @@ type Chat struct {
 	Username       string `json:"username"`
 	Bio            string `json:"bio"`
 	Avatar         string `json:"avatar"`
+	Background     string `json:"background"`
+	Pattern        string `json:"pattern"`
 	AccountDeleted bool   `json:"accountDeleted"`
 	LastMessage    string `json:"lastMessage"`
 	LastTimestamp  int64  `json:"lastTimestamp"`
@@ -112,19 +122,23 @@ type DeletePayload struct {
 }
 
 type ProfileUpdatePayload struct {
-	Name     string `json:"name"`
-	Username string `json:"username"`
-	Bio      string `json:"bio"`
-	Avatar   string `json:"avatar"`
+	Name       string `json:"name"`
+	Username   string `json:"username"`
+	Bio        string `json:"bio"`
+	Avatar     string `json:"avatar"`
+	Background string `json:"background"`
+	Pattern    string `json:"pattern"`
 }
 
 type AvatarRequestPayload struct{}
 
 type AvatarResponsePayload struct {
-	Name     string `json:"name"`
-	Username string `json:"username"`
-	Bio      string `json:"bio"`
-	Avatar   string `json:"avatar"`
+	Name       string `json:"name"`
+	Username   string `json:"username"`
+	Bio        string `json:"bio"`
+	Avatar     string `json:"avatar"`
+	Background string `json:"background"`
+	Pattern    string `json:"pattern"`
 }
 
 type ReadReceiptPayload struct {
@@ -174,4 +188,44 @@ func IsAllowedSignalKind(kind string) bool {
 	default:
 		return false
 	}
+}
+
+// ChatMeta is the peer-supplied half of a chat row — everything that arrives in
+// a profile_update or an avatar_response. It travels as one struct so adding a
+// field later does not ripple through every call site.
+type ChatMeta struct {
+	PeerID     string `json:"peerId"`
+	Name       string `json:"name"`
+	Username   string `json:"username"`
+	Bio        string `json:"bio"`
+	Avatar     string `json:"avatar"`
+	Background string `json:"background"`
+	Pattern    string `json:"pattern"`
+}
+
+// Call log directions.
+const (
+	CallIncoming = "incoming"
+	CallOutgoing = "outgoing"
+)
+
+// Call outcomes. A call that was answered is "accepted"; one the peer declined
+// is "declined"; one that rang out or was cancelled is "missed".
+const (
+	CallAccepted = "accepted"
+	CallDeclined = "declined"
+	CallMissed   = "missed"
+)
+
+// CallEntry is one row of the call log.
+type CallEntry struct {
+	ID        string `json:"id"`
+	PeerID    string `json:"peerId"`
+	Name      string `json:"name"`
+	Direction string `json:"direction"`
+	Outcome   string `json:"outcome"`
+	Video     bool   `json:"video"`
+	// Seconds the call was connected; 0 for anything never answered.
+	Duration  int64 `json:"duration"`
+	Timestamp int64 `json:"ts"`
 }

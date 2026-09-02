@@ -9,9 +9,15 @@ export function AppVersion():Promise<string>;
 
 export function BlockPeer(arg1:string):Promise<void>;
 
+export function ClearCallLog():Promise<void>;
+
 export function DeleteChat(arg1:string):Promise<void>;
 
 export function DeleteMessage(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function ExportProfile():Promise<string>;
+
+export function GetCallLog():Promise<Array<models.CallEntry>>;
 
 export function GetChats():Promise<Array<models.Chat>>;
 
@@ -23,7 +29,11 @@ export function GetOnlinePeers():Promise<Array<models.Peer>>;
 
 export function GetProfile():Promise<models.Profile>;
 
+export function ImportProfile():Promise<models.Profile>;
+
 export function ListBlocked():Promise<Array<string>>;
+
+export function LogCall(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:boolean,arg7:number):Promise<void>;
 
 export function Logout():Promise<void>;
 
@@ -51,7 +61,7 @@ export function SendSignal(arg1:string,arg2:string,arg3:string,arg4:string,arg5:
 
 export function SendTyping(arg1:string,arg2:boolean):Promise<void>;
 
-export function StartChatWithPeer(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
+export function StartChatWithPeer(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string):Promise<void>;
 
 export function UnblockPeer(arg1:string):Promise<void>;
 

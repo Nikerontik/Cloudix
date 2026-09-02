@@ -25,7 +25,7 @@ import (
 )
 
 // appVersion is surfaced in Settings; bump it with user-visible releases.
-const appVersion = "0.2.0"
+const appVersion = "1.0"
 
 type App struct {
 	ctx       context.Context
@@ -57,6 +57,15 @@ func (a *App) setProfile(p *models.Profile) {
 	a.profileMu.Lock()
 	a.profile = p
 	a.profileMu.Unlock()
+}
+
+// logErr keeps the runtime.LogErrorf(a.ctx, ...) nil-context dance in one place
+// for code added after the original pass.
+func (a *App) logErr(format string, args ...interface{}) {
+	if a.ctx == nil {
+		return
+	}
+	runtime.LogErrorf(a.ctx, format, args...)
 }
 
 func (a *App) emitEvent(name string, payload interface{}) {
@@ -406,12 +415,20 @@ func (a *App) ensureChatMeta(peerID string) {
 
 	if a.discovery != nil {
 		if peer, ok := a.discovery.GetPeerEvenIfStale(peerID); ok && peer.Name != "" {
-			_ = store.UpsertChatMeta(peerID, peer.Name, peer.Username, peer.Bio, peer.Avatar)
+			_ = store.UpsertChatMeta(models.ChatMeta{
+				PeerID: peerID, Name: peer.Name, Username: peer.Username,
+				Bio: peer.Bio, Avatar: peer.Avatar,
+				Background: peer.Background, Pattern: peer.Pattern,
+			})
 			return
 		}
 	}
+	// The overlay roster carries no decoration — it arrives with the first
+	// profile exchange over the link.
 	if m, ok := a.overlayMember(peerID); ok {
-		_ = store.UpsertChatMeta(peerID, m.Name, m.Username, "", "")
+		_ = store.UpsertChatMeta(models.ChatMeta{
+			PeerID: peerID, Name: m.Name, Username: m.Username,
+		})
 		return
 	}
 	// Nothing known about them yet — still create the row so the message has
@@ -510,6 +527,8 @@ func (a *App) UpdateProfile(p models.Profile) error {
 	updated.Username = p.Username
 	updated.Bio = p.Bio
 	updated.Avatar = p.Avatar
+	updated.Background = p.Background
+	updated.Pattern = p.Pattern
 
 	if err := a.store.SaveProfile(updated); err != nil {
 		return fmt.Errorf("SaveProfile: %w", err)
@@ -517,10 +536,12 @@ func (a *App) UpdateProfile(p models.Profile) error {
 	a.setProfile(&updated)
 
 	payload, err := json.Marshal(models.ProfileUpdatePayload{
-		Name:     updated.Name,
-		Username: updated.Username,
-		Bio:      updated.Bio,
-		Avatar:   updated.Avatar,
+		Name:       updated.Name,
+		Username:   updated.Username,
+		Bio:        updated.Bio,
+		Avatar:     updated.Avatar,
+		Background: updated.Background,
+		Pattern:    updated.Pattern,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal ProfileUpdatePayload: %w", err)
@@ -922,7 +943,7 @@ func (a *App) DeleteChat(peerID string) error {
 	return nil
 }
 
-func (a *App) StartChatWithPeer(peerID, name, username, bio, avatar string) error {
+func (a *App) StartChatWithPeer(peerID, name, username, bio, avatar, background, pattern string) error {
 	profile := a.getProfile()
 	if profile == nil {
 		return fmt.Errorf("no active profile")
@@ -934,7 +955,10 @@ func (a *App) StartChatWithPeer(peerID, name, username, bio, avatar string) erro
 		return fmt.Errorf("peerID is required")
 	}
 
-	if err := a.store.UpsertChatMeta(peerID, name, username, bio, avatar); err != nil {
+	if err := a.store.UpsertChatMeta(models.ChatMeta{
+		PeerID: peerID, Name: name, Username: username, Bio: bio,
+		Avatar: avatar, Background: background, Pattern: pattern,
+	}); err != nil {
 		return fmt.Errorf("UpsertChatMeta: %w", err)
 	}
 
@@ -1327,7 +1351,10 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 			}
 			return
 		}
-		if err := a.store.UpsertChatMetaIfExists(env.SenderID, p.Name, p.Username, p.Bio, p.Avatar); err != nil && a.ctx != nil {
+		if err := a.store.UpsertChatMetaIfExists(models.ChatMeta{
+			PeerID: env.SenderID, Name: p.Name, Username: p.Username, Bio: p.Bio,
+			Avatar: p.Avatar, Background: p.Background, Pattern: p.Pattern,
+		}); err != nil && a.ctx != nil {
 			runtime.LogErrorf(a.ctx, "UpsertChatMetaIfExists failed: %v", err)
 		}
 		if a.discovery != nil {
@@ -1350,10 +1377,12 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 			return
 		}
 		payload, err := json.Marshal(models.AvatarResponsePayload{
-			Name:     myProfile.Name,
-			Username: myProfile.Username,
-			Bio:      myProfile.Bio,
-			Avatar:   myProfile.Avatar,
+			Name:       myProfile.Name,
+			Username:   myProfile.Username,
+			Bio:        myProfile.Bio,
+			Avatar:     myProfile.Avatar,
+			Background: myProfile.Background,
+			Pattern:    myProfile.Pattern,
 		})
 		if err != nil {
 			if a.ctx != nil {
@@ -1375,7 +1404,10 @@ func (a *App) handleEnvelope(env models.WireEnvelope) {
 			}
 			return
 		}
-		if err := a.store.UpsertChatMeta(env.SenderID, p.Name, p.Username, p.Bio, p.Avatar); err != nil && a.ctx != nil {
+		if err := a.store.UpsertChatMeta(models.ChatMeta{
+			PeerID: env.SenderID, Name: p.Name, Username: p.Username, Bio: p.Bio,
+			Avatar: p.Avatar, Background: p.Background, Pattern: p.Pattern,
+		}); err != nil && a.ctx != nil {
 			runtime.LogErrorf(a.ctx, "UpsertChatMeta failed: %v", err)
 		}
 		if a.discovery != nil {
@@ -1485,6 +1517,224 @@ func (a *App) SaveMedia(suggestedName, dataURL string) (string, error) {
 		return "", fmt.Errorf("write %s: %w", path, err)
 	}
 	return path, nil
+}
+
+// profileFileVersion is the on-disk format of an exported profile. Bump it only
+// for a change a reader could not otherwise cope with.
+const profileFileVersion = 1
+
+// profileFile is what ExportProfile writes and ImportProfile reads. The wrapper
+// exists so the file can be recognised before it is trusted, and so a later
+// version can carry more than the profile without breaking old readers.
+type profileFile struct {
+	Kind       string         `json:"cloudix"`
+	Version    int            `json:"version"`
+	ExportedAt int64          `json:"exportedAt"`
+	Profile    models.Profile `json:"profile"`
+}
+
+// ExportProfile writes the local profile to a file the user picks and returns
+// the path, or "" if they cancelled.
+//
+// The peer id is part of the export on purpose: restoring the same identity is
+// the whole point, since there is no account server to prove who you are and
+// contacts recognise you by that id alone.
+func (a *App) ExportProfile() (string, error) {
+	profile := a.getProfile()
+	if profile == nil {
+		return "", fmt.Errorf("no active profile")
+	}
+	if a.ctx == nil {
+		return "", fmt.Errorf("app not started")
+	}
+
+	data, err := json.MarshalIndent(profileFile{
+		Kind:       "profile",
+		Version:    profileFileVersion,
+		ExportedAt: time.Now().Unix(),
+		Profile:    *profile,
+	}, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal profile: %w", err)
+	}
+
+	suggested := profile.Username
+	if suggested == "" {
+		suggested = profile.Name
+	}
+	if suggested == "" {
+		suggested = "cloudix"
+	}
+	suggested = safeFileName(suggested) + ".cloudix-profile.json"
+
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		DefaultFilename:      suggested,
+		CanCreateDirectories: true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("save dialog: %w", err)
+	}
+	if path == "" {
+		return "", nil // cancelled
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return "", fmt.Errorf("write %s: %w", path, err)
+	}
+	return path, nil
+}
+
+// ImportProfile reads a profile file the user picks and adopts it as the local
+// profile. Returns nil if the user cancelled.
+//
+// This replaces whatever profile exists, so the UI must only offer it where
+// there is nothing to lose — onboarding — or after warning.
+func (a *App) ImportProfile() (*models.Profile, error) {
+	if a.store == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+	if a.ctx == nil {
+		return nil, fmt.Errorf("app not started")
+	}
+
+	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Cloudix",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Cloudix profile (*.json)", Pattern: "*.json"},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open dialog: %w", err)
+	}
+	if path == "" {
+		return nil, nil // cancelled
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	// A profile carries a base64 avatar, so the file is small but not tiny;
+	// anything past a few megabytes is not one of ours.
+	if len(raw) > 32<<20 {
+		return nil, fmt.Errorf("file is too large to be a profile")
+	}
+
+	var file profileFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return nil, fmt.Errorf("not a Cloudix profile file")
+	}
+	if file.Kind != "profile" || file.Version < 1 {
+		return nil, fmt.Errorf("not a Cloudix profile file")
+	}
+	if file.Version > profileFileVersion {
+		return nil, fmt.Errorf("this profile was exported by a newer version of Cloudix")
+	}
+
+	p := file.Profile
+	p.Name = strings.TrimSpace(p.Name)
+	if p.Name == "" {
+		return nil, fmt.Errorf("the profile has no name")
+	}
+	// A missing or malformed id would make the user invisible to everyone who
+	// already knows them, which is the opposite of what an import is for — but
+	// a fresh one still beats refusing to import at all.
+	if !strings.HasPrefix(p.PeerID, "P-") {
+		p.PeerID = genPeerID()
+	}
+	if p.CreatedAt == 0 {
+		p.CreatedAt = time.Now().Unix()
+	}
+
+	if err := a.store.SaveProfile(p); err != nil {
+		return nil, fmt.Errorf("SaveProfile: %w", err)
+	}
+	a.setProfile(&p)
+	return &p, nil
+}
+
+// safeFileName strips what a file name cannot contain on Windows or macOS, so a
+// display name with a slash or a colon does not fail the save.
+func safeFileName(s string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', 0:
+			return '-'
+		}
+		if r < 32 {
+			return -1
+		}
+		return r
+	}, s)
+	cleaned = strings.TrimSpace(cleaned)
+	if len(cleaned) > 60 {
+		cleaned = cleaned[:60]
+	}
+	if cleaned == "" {
+		return "cloudix"
+	}
+	return cleaned
+}
+
+// GetCallLog returns the call history, newest first.
+func (a *App) GetCallLog() []models.CallEntry {
+	if a.store == nil {
+		return []models.CallEntry{}
+	}
+	entries, err := a.store.ListCalls(200)
+	if err != nil {
+		a.logErr("ListCalls failed: %v", err)
+		return []models.CallEntry{}
+	}
+	return entries
+}
+
+// LogCall records a finished call. The frontend owns call state, so it decides
+// when a call is over and what became of it.
+func (a *App) LogCall(id, peerID, name, direction, outcome string, video bool, duration int64) error {
+	if a.store == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	switch direction {
+	case models.CallIncoming, models.CallOutgoing:
+	default:
+		return fmt.Errorf("unknown call direction %q", direction)
+	}
+	switch outcome {
+	case models.CallAccepted, models.CallDeclined, models.CallMissed:
+	default:
+		return fmt.Errorf("unknown call outcome %q", outcome)
+	}
+	if peerID == "" {
+		return fmt.Errorf("peerId is required")
+	}
+	if id == "" {
+		id = genPeerID()
+	}
+	if duration < 0 {
+		duration = 0
+	}
+	entry := models.CallEntry{
+		ID: id, PeerID: peerID, Name: name, Direction: direction,
+		Outcome: outcome, Video: video, Duration: duration,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	if err := a.store.InsertCall(entry); err != nil {
+		return fmt.Errorf("InsertCall: %w", err)
+	}
+	a.emitEvent("calls:update", entry)
+	return nil
+}
+
+// ClearCallLog empties the call history.
+func (a *App) ClearCallLog() error {
+	if a.store == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if err := a.store.ClearCalls(); err != nil {
+		return fmt.Errorf("ClearCalls: %w", err)
+	}
+	a.emitEvent("calls:cleared", nil)
+	return nil
 }
 
 // AppVersion is shown in Settings so a user can tell at a glance which build

@@ -14,12 +14,24 @@ export function BlockPeer(arg1) {
   return window['go']['app']['App']['BlockPeer'](arg1);
 }
 
+export function ClearCallLog() {
+  return window['go']['app']['App']['ClearCallLog']();
+}
+
 export function DeleteChat(arg1) {
   return window['go']['app']['App']['DeleteChat'](arg1);
 }
 
 export function DeleteMessage(arg1, arg2, arg3) {
   return window['go']['app']['App']['DeleteMessage'](arg1, arg2, arg3);
+}
+
+export function ExportProfile() {
+  return window['go']['app']['App']['ExportProfile']();
+}
+
+export function GetCallLog() {
+  return window['go']['app']['App']['GetCallLog']();
 }
 
 export function GetChats() {
@@ -42,8 +54,16 @@ export function GetProfile() {
   return window['go']['app']['App']['GetProfile']();
 }
 
+export function ImportProfile() {
+  return window['go']['app']['App']['ImportProfile']();
+}
+
 export function ListBlocked() {
   return window['go']['app']['App']['ListBlocked']();
+}
+
+export function LogCall(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['app']['App']['LogCall'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
 export function Logout() {
@@ -98,8 +118,8 @@ export function SendTyping(arg1, arg2) {
   return window['go']['app']['App']['SendTyping'](arg1, arg2);
 }
 
-export function StartChatWithPeer(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['app']['App']['StartChatWithPeer'](arg1, arg2, arg3, arg4, arg5);
+export function StartChatWithPeer(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['app']['App']['StartChatWithPeer'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
 export function UnblockPeer(arg1) {
