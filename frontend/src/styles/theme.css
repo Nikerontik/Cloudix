@@ -3481,6 +3481,12 @@ button {
 
 .quick-audio {
   flex-shrink: 0;
+  /* The wrapper exists only to catch clicks outside the popover, but as a plain
+     block it let the inline-flex button sit on the text baseline — which parked
+     it a little low and a little left of the buttons beside it, since those are
+     flex children of the footer and this one was not. */
+  display: flex;
+  align-items: center;
 }
 
 .quick-audio-pop {
