@@ -534,6 +534,12 @@ button {
 }
 
 .brand-title {
+  /* Without this the wordmark refuses to shrink and slides under the refresh and
+     theme buttons, which hold their own size. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 19px;
   font-weight: 800;
   letter-spacing: -0.35px;
@@ -719,6 +725,7 @@ button {
 }
 
 .chat-item {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -848,8 +855,9 @@ button {
   justify-content: center;
   gap: 6px;
   padding: 0 12px;
-  flex: 1;
-  min-width: 0;
+  /* Icon buttons keep their size: they used to share the row with the settings
+     button and its label, which is what the old `flex: 1` was for. */
+  flex: 0 0 auto;
   white-space: nowrap;
   overflow: hidden;
   transition: background 0.2s var(--ease-soft), border-color 0.2s var(--ease-soft),
@@ -1408,6 +1416,7 @@ button {
 }
 
 .settings-nav-item {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -2117,6 +2126,13 @@ button {
   max-height: calc(100vh - var(--titlebar-h) - 36px);
   overflow-y: auto;
   --wails-draggable: no-drag;
+}
+
+/* The card is a scrolling column, and a flex child shrinks before its parent
+   scrolls — which squashed the button and the avatar instead of putting a
+   scrollbar on the card. Nothing in here has a height worth taking away. */
+.onboarding-card > * {
+  flex-shrink: 0;
 }
 
 .onboarding-logo {
@@ -2956,6 +2972,7 @@ button {
 }
 
 .net-member {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -3289,6 +3306,7 @@ button {
 }
 
 .side-menu-item {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 12px;

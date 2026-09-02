@@ -296,6 +296,14 @@ pushed itself out of the settings panel and gave it a horizontal scrollbar. Any
 flex child holding text needs `min-width: 0`, and `.settings-row` wraps so a
 control drops under its label rather than off the edge.
 
+**A flex child shrinks before its parent scrolls.** `flex-shrink` defaults to 1,
+so in a scrolling column the children get squashed and the scrollbar never
+appears — that is what flattened the onboarding button and the avatar circle.
+Every scrolling column here (`.onboarding-card`, `.chat-list`, `.side-menu`,
+`.settings-nav`, `.net-members`) needs `flex-shrink: 0` on its children. The
+mirror image applies across a row: `.brand-title` slid under the buttons beside
+it until it got `min-width: 0` plus an ellipsis.
+
 **A full-height overlay must start at `var(--chrome-h)`, not at 0.** The side
 menu and the profile panel both sat at the top of the window and slid under the
 macOS traffic lights and the Windows caption buttons. `--chrome-h` resolves to
