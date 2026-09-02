@@ -289,6 +289,20 @@ Start/Stop/Restart are serialized by `runMu`, so a restart retires the old gener
 needs SO_REUSEADDR + SO_REUSEPORT via `net.ListenConfig{Control: reuseControl}`
 (`reuse_unix.go` / `reuse_windows.go`).
 
+**A full-height overlay must start at `var(--chrome-h)`, not at 0.** The side
+menu and the profile panel both sat at the top of the window and slid under the
+macOS traffic lights and the Windows caption buttons. `--chrome-h` resolves to
+the `.titlebar` inset on macOS, `.win-titlebar` on Windows and `0px` on Linux.
+
+**Nothing can escape the sidebar.** `.sidebar` sets `overflow: hidden` and
+`.glass` adds a `backdrop-filter`, which makes it a containing block — so even
+`position: fixed` is clipped by it. The quick-audio popover is sized against
+`--sidebar-w` rather than trying to overflow.
+
+**Check the JSON tag, not the Go field name.** `models.CallEntry.Timestamp` is
+tagged `json:"ts"`, and the call log read `entry.timestamp`, so every row
+rendered "Invalid Date" twice. The frontend sees tags, never field names.
+
 ## Platform limits (not bugs — do not try to fix in code)
 
 - **macOS cannot share system audio.** WebKit's `getDisplayMedia` returns no audio track.
