@@ -92,6 +92,22 @@ func mediaPreview(text, mediaKind string) string {
 	}
 }
 
+// normalizeUsername keeps exactly one leading "@". The frontend shows the @ as a
+// fixed prefix, but the rule is enforced here too: a username is how people
+// address each other, and every path that writes one — onboarding, Settings, the
+// profile editor, an imported file — has to agree on its shape.
+//
+// An empty username stays empty; callers decide whether that is allowed.
+func normalizeUsername(raw string) string {
+	clean := strings.TrimSpace(raw)
+	clean = strings.TrimLeft(clean, "@")
+	clean = strings.TrimSpace(clean)
+	if clean == "" {
+		return ""
+	}
+	return "@" + clean
+}
+
 func genPeerID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
@@ -501,7 +517,7 @@ func (a *App) Register(name, username, bio, avatar string) (*models.Profile, err
 	p := models.Profile{
 		PeerID:    genPeerID(),
 		Name:      name,
-		Username:  username,
+		Username:  normalizeUsername(username),
 		Bio:       bio,
 		Avatar:    avatar,
 		CreatedAt: time.Now().Unix(),
@@ -524,7 +540,11 @@ func (a *App) UpdateProfile(p models.Profile) error {
 
 	updated := *current
 	updated.Name = p.Name
-	updated.Username = p.Username
+	// The @ is not the user's to remove: it is what makes a username one.
+	// Refusing to blank it out entirely keeps peers able to address you.
+	if u := normalizeUsername(p.Username); u != "" {
+		updated.Username = u
+	}
 	updated.Bio = p.Bio
 	updated.Avatar = p.Avatar
 	updated.Background = p.Background
@@ -1635,6 +1655,7 @@ func (a *App) ImportProfile() (*models.Profile, error) {
 	if p.Name == "" {
 		return nil, fmt.Errorf("the profile has no name")
 	}
+	p.Username = normalizeUsername(p.Username)
 	// A missing or malformed id would make the user invisible to everyone who
 	// already knows them, which is the opposite of what an import is for — but
 	// a fresh one still beats refusing to import at all.

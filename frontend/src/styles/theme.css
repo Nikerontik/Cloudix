@@ -655,6 +655,7 @@ button {
 
 .tab-btn {
   flex: 1;
+  min-width: 0;
   height: 28px;
   border: none;
   border-radius: calc(var(--radius-md) - 4px);
@@ -1437,6 +1438,7 @@ button {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 22px 26px 30px;
 }
 
@@ -1500,7 +1502,10 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  /* Narrow the window far enough and the control drops under its label instead
+     of pushing out of the panel. */
+  flex-wrap: wrap;
+  gap: 8px 14px;
   padding: 11px 14px;
   border-radius: var(--radius-md);
   background: var(--hover);
@@ -1511,12 +1516,18 @@ button {
   font-size: 13.5px;
   color: var(--text-secondary);
   flex-shrink: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .settings-row input,
 .settings-row textarea,
 .settings-row select {
-  flex: 1;
+  /* A flex item defaults to min-width:auto and refuses to shrink below its own
+     content — which is how a <select> holding "Системный звук (если
+     поддерживается)" pushed itself out of the settings panel. */
+  flex: 1 1 160px;
+  min-width: 0;
   max-width: 260px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -1565,7 +1576,8 @@ button {
 }
 
 .settings-row input[type="range"] {
-  flex: 1;
+  flex: 1 1 120px;
+  min-width: 0;
   max-width: 200px;
   accent-color: var(--accent);
   padding: 0;
@@ -1575,6 +1587,8 @@ button {
 
 .settings-value,
 .peer-id-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
   font-size: 12px;
   color: var(--text);
@@ -3623,4 +3637,54 @@ button {
   .side-menu {
     padding-top: 12px;
   }
+}
+
+/* Username field: the @ sits beside the input rather than inside it, so it is
+   not something the user can delete. */
+.username-input {
+  flex: 1 1 160px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 260px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-strong);
+  transition: border-color 0.2s var(--ease-soft);
+}
+
+.username-input:focus-within {
+  border-color: var(--accent);
+}
+
+.username-at {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: 13.5px;
+  user-select: none;
+}
+
+/* The inner field drops the chrome the wrapper now carries. */
+.username-input input,
+.settings-row .username-input input,
+.onboarding-field .username-input input {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  padding: 7px 0;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+  font-size: 13.5px;
+}
+
+/* Onboarding fields are full width, so the wrapper follows suit there. */
+.onboarding-field .username-input {
+  max-width: none;
+  width: 100%;
 }

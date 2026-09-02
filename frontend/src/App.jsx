@@ -68,11 +68,34 @@ const safePattern = (v) => (DECOR_PATTERNS.includes(v) ? v : "");
 
 // Usernames are stored with their leading "@" (see Onboarding), but not every
 // path guarantees it — an imported profile carries whatever it was given.
+const stripAt = (username) => (username || "").trim().replace(/^@+/, "").trim();
+
 const withAt = (username) => {
-  const clean = (username || "").trim();
-  if (!clean) return "";
-  return clean.startsWith("@") ? clean : "@" + clean;
+  const clean = stripAt(username);
+  return clean ? "@" + clean : "";
 };
+
+// The @ is drawn beside the field rather than living inside it, so it cannot be
+// deleted — it is what makes a username a username, and peers address you by it.
+// The value handed upwards is always normalised; the Go side normalises again,
+// because onboarding, Settings, the profile editor and an imported file all
+// write this field.
+function UsernameInput({ value, onChange, placeholder, autoFocus }) {
+  return (
+    <span className="username-input">
+      <span className="username-at" aria-hidden="true">
+        @
+      </span>
+      <input
+        type="text"
+        value={stripAt(value)}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        onChange={(e) => onChange(withAt(e.target.value))}
+      />
+    </span>
+  );
+}
 
 const decorColorLabel = (id, t) => {
   const gradient = id.endsWith("-gradient");
@@ -491,13 +514,14 @@ function Onboarding({ onDone, t, theme, setTheme, platform }) {
     reader.readAsDataURL(file);
   };
 
-  const canContinue = name.trim().length > 0 && username.trim().length > 1 && !busy;
+  // The @ is chrome now, so the length check counts the name itself.
+  const canContinue = name.trim().length > 0 && stripAt(username).length > 0 && !busy;
 
   const finish = async () => {
     if (!canContinue) return;
     setBusy(true);
     setError("");
-    const uname = username.trim().startsWith("@") ? username.trim() : "@" + username.trim();
+    const uname = withAt(username);
 
     try {
       const profile = await WailsApp.Register(name.trim(), uname, bio.trim(), avatar || "");
@@ -595,10 +619,9 @@ function Onboarding({ onDone, t, theme, setTheme, platform }) {
 
         <div className="onboarding-field">
           <label>{t.onboarding.username}</label>
-          <input
-            type="text"
+          <UsernameInput
             value={username}
-            onChange={(e) => setUsername(e.target.value)}
+            onChange={setUsername}
             placeholder={t.onboarding.usernamePlaceholder}
           />
         </div>
@@ -3866,10 +3889,9 @@ function SettingsPanel({
               </div>
               <div className="settings-row">
                 <label>{t.settings.nickname}</label>
-                <input
-                  type="text"
+                <UsernameInput
                   value={profile.username}
-                  onChange={(e) => save({ ...profile, username: e.target.value })}
+                  onChange={(username) => save({ ...profile, username })}
                 />
               </div>
               <div className="settings-row">
@@ -4319,10 +4341,9 @@ function ProfilePanel({
           <div className="profile-info-row">
             <div className="profile-info-label">{t.profile.username}</div>
             {editing ? (
-              <input
-                type="text"
+              <UsernameInput
                 value={draft.username}
-                onChange={(e) => setDraft({ ...draft, username: e.target.value })}
+                onChange={(username) => setDraft({ ...draft, username })}
               />
             ) : (
               <div className="profile-info-value">{draft.username || "—"}</div>
