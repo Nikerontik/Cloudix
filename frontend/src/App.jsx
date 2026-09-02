@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence, useDragControls, useMotionValue } from "framer-motion";
-import { useT, previewText } from "./i18n";
+import { useT, previewText, mediaPreviewToken } from "./i18n";
 import * as WailsApp from "../wailsjs/go/app/App";
 import {
   EventsOn,
@@ -5248,7 +5248,13 @@ export default function App() {
       username: "",
       bio: "",
       avatar: "",
-      preview: savedMessages[savedMessages.length - 1]?.text || "",
+      // FIX: this read only .text, so sending a photo or a video into Saved left
+      // the preview empty and the row kept saying "no messages". Media carries
+      // its caption in .text and its kind in .mediaKind, exactly like a chat.
+      preview: (() => {
+        const last = savedMessages[savedMessages.length - 1];
+        return last ? mediaPreviewToken(last.text, last.mediaKind) : "";
+      })(),
       deleted: false,
       peerId: "",
       online: true,

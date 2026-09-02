@@ -766,14 +766,40 @@ const dict = {
 
 // Backend stores media previews as locale-neutral tokens; legacy rows may still
 // hold the old Russian literals, so map those too.
+// Keep in sync with models.PreviewImage/Video/File on the Go side. Previews are
+// stored as neutral tokens and localized at render time — a localized string in
+// the DB leaks one language into the other UI.
+export const PREVIEW_IMAGE = "[[image]]";
+export const PREVIEW_VIDEO = "[[video]]";
+export const PREVIEW_FILE = "[[file]]";
+
 const PREVIEW_TOKENS = {
-  "[[image]]": "image",
-  "[[video]]": "video",
-  "[[file]]": "file",
+  [PREVIEW_IMAGE]: "image",
+  [PREVIEW_VIDEO]: "video",
+  [PREVIEW_FILE]: "file",
+  // Legacy rows written before previews became tokens.
   "📷 Фото": "image",
   "🎥 Видео": "video",
   "📎 Вложение": "file",
 };
+
+// Mirrors mediaPreview() in backend/app/app.go. Chats get their preview from the
+// database, where Go already built it; "Saved" notes never reach the Go side, so
+// the frontend has to produce the same token itself.
+export function mediaPreviewToken(text, mediaKind) {
+  switch (mediaKind) {
+    case "image":
+      return PREVIEW_IMAGE;
+    case "video":
+      return PREVIEW_VIDEO;
+    case undefined:
+    case null:
+    case "":
+      return text || "";
+    default:
+      return PREVIEW_FILE;
+  }
+}
 
 export function previewText(raw, t) {
   const key = PREVIEW_TOKENS[raw];
