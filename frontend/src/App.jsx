@@ -16,6 +16,9 @@ const REACTIONS = ["👍", "❤️", "🔥", "😂", "👎"];
 const SAVED_CHAT_ID = "__saved__";
 const GITHUB_URL = "https://github.com/Nikerontik/Cloudix";
 const savedStorageKey = (peerId) => "cloudix:saved-messages:" + (peerId || "anon");
+// When the call log was last looked at. Per profile, like Saved notes, so
+// logging in as someone else does not inherit their badge.
+const callsSeenKey = (peerId) => "cloudix:calls-seen:" + (peerId || "anon");
 // Keep in sync with transport.maxLineBytes on the Go side (base64 inflates ~33%).
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
@@ -988,6 +991,7 @@ function Sidebar({
   onOpenNetwork,
   netActive,
   callLog,
+  unseenCalls,
   onCallBack,
   onClearCallLog,
 }) {
@@ -1073,8 +1077,12 @@ function Sidebar({
                 {totalUnread > 99 ? "99+" : totalUnread}
               </span>
             )}
-            {tb === "calls" && callLog.length > 0 && (
-              <span className="tab-count">{callLog.length}</span>
+            {/* Missed calls the user has not looked at yet — the total was
+                always on screen and read as a permanent unread badge. */}
+            {tb === "calls" && unseenCalls > 0 && (
+              <span className="tab-count unread">
+                {unseenCalls > 99 ? "99+" : unseenCalls}
+              </span>
             )}
           </button>
         ))}
@@ -4474,6 +4482,7 @@ export default function App() {
   const [mediaChatId, setMediaChatId] = useState(null);
   const [callState, setCallState] = useState(null);
   const [callLog, setCallLog] = useState([]);
+  const [callsSeenAt, setCallsSeenAt] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   // What is known about the call in progress. The modal owns the connection, so
   // it reports the outcome; the duration is measured here because only this
@@ -4631,6 +4640,12 @@ export default function App() {
     refreshChats();
     refreshVpnStatus();
     refreshCallLog();
+
+    try {
+      setCallsSeenAt(Number(localStorage.getItem(callsSeenKey(profile.peerId))) || 0);
+    } catch {
+      setCallsSeenAt(0);
+    }
 
     const t1 = setTimeout(() => {
       refreshOnlinePeers();
@@ -5182,7 +5197,10 @@ export default function App() {
     }
     // "Удалить локальный профиль" должно чистить и локальное «Избранное».
     try {
-      if (prevPeerId) localStorage.removeItem(savedStorageKey(prevPeerId));
+      if (prevPeerId) {
+        localStorage.removeItem(savedStorageKey(prevPeerId));
+        localStorage.removeItem(callsSeenKey(prevPeerId));
+      }
     } catch {}
     setProfileState(null);
     setChatsRaw([]);
@@ -5200,8 +5218,26 @@ export default function App() {
     setTypingByPeer({});
     setSavedMessages([]);
     setCallLog([]);
+    setCallsSeenAt(0);
     setMenuOpen(false);
   };
+
+  // Only missed calls are worth a badge: an answered one needs no attention,
+  // and the total never went away, which is what made it look like unread mail.
+  const unseenCalls = useMemo(
+    () => callLog.filter((c) => c?.outcome === "missed" && (c?.ts || 0) > callsSeenAt).length,
+    [callLog, callsSeenAt]
+  );
+
+  // Opening the tab is what counts as having seen them.
+  useEffect(() => {
+    if (tab !== "calls" || !profile?.peerId) return;
+    const now = Date.now();
+    setCallsSeenAt(now);
+    try {
+      localStorage.setItem(callsSeenKey(profile.peerId), String(now));
+    } catch {}
+  }, [tab, callLog, profile?.peerId]);
 
   const chatsList = useMemo(() => {
     const savedChatMeta = {
@@ -5299,6 +5335,7 @@ export default function App() {
           onOpenNetwork={() => setShowNetwork(true)}
           netActive={!!vpnStatus?.active}
           callLog={callLog}
+          unseenCalls={unseenCalls}
           onCallBack={callBackFromLog}
           onClearCallLog={clearCallLog}
         />
