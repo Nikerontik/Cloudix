@@ -348,6 +348,13 @@ Two things happen on the way, and both are visible when skipped:
   near-transparent specks around the disc that read as dirt at icon sizes. The
   circle's own antialiasing is well clear of that cutoff.
 
+**macOS: run `build/mac-icon.sh` after `wails build`.** Wails generates the
+`.icns` from `appicon.png` on every build but emits only the @2x
+representations. The script rebuilds it with all ten (1x and @2x from 16 to
+512), re-registers the bundle with LaunchServices and touches it — LaunchServices
+caches by bundle path, so a rebuilt `.app` can keep showing the icon it had
+before, which looks exactly like the icon "disappearing".
+
 `sips` cannot write `.ico`, so it does the resampling and a throwaway Go program
 packs the container: 16/32/48/64/128/256 as PNG entries, which Windows has read
 since Vista.

@@ -3480,13 +3480,13 @@ button {
    full-width dropdowns in the chat list read as content, not as controls. */
 
 .quick-audio {
-  flex-shrink: 0;
-  /* The wrapper exists only to catch clicks outside the popover, but as a plain
-     block it let the inline-flex button sit on the text baseline — which parked
-     it a little low and a little left of the buttons beside it, since those are
-     flex children of the footer and this one was not. */
-  display: flex;
-  align-items: center;
+  /* The wrapper exists only to hold the ref that catches clicks outside the
+     popover. `display: contents` takes it out of the layout entirely, so the
+     button inside becomes a direct flex child of the footer and is sized and
+     centred by exactly the same rules as the two beside it. Making the wrapper
+     a flex container was not enough: it still formed a box of its own, and the
+     button sat one level deeper than its neighbours. */
+  display: contents;
 }
 
 .quick-audio-pop {
