@@ -66,6 +66,14 @@ const DECOR_SWATCH = {
 const safeBackground = (v) => (DECOR_BACKGROUNDS.includes(v) ? v : "");
 const safePattern = (v) => (DECOR_PATTERNS.includes(v) ? v : "");
 
+// Usernames are stored with their leading "@" (see Onboarding), but not every
+// path guarantees it — an imported profile carries whatever it was given.
+const withAt = (username) => {
+  const clean = (username || "").trim();
+  if (!clean) return "";
+  return clean.startsWith("@") ? clean : "@" + clean;
+};
+
 const decorColorLabel = (id, t) => {
   const gradient = id.endsWith("-gradient");
   const base = gradient ? id.slice(0, -"-gradient".length) : id;
@@ -663,16 +671,22 @@ function CallLogRow({ entry, onCallBack, t }) {
   const missed = entry.outcome === "missed";
   const incoming = entry.direction === "incoming";
 
-  const when = new Date(entry.timestamp);
+  // FIX: the Go field is tagged `json:"ts"`, so reading entry.timestamp gave
+  // undefined and every row rendered "Invalid Date" twice.
+  const when = new Date(entry.ts);
+  const dated = !Number.isNaN(when.getTime());
   const today = new Date();
   const yesterday = new Date(today.getTime() - 86400000);
   const sameDay = (a, b) => a.toDateString() === b.toDateString();
-  const time = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  const day = sameDay(when, today)
-    ? t.callLog.today
-    : sameDay(when, yesterday)
-      ? t.callLog.yesterday
-      : when.toLocaleDateString();
+  // A row with no usable timestamp shows nothing rather than "Invalid Date".
+  const time = dated ? when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  const day = !dated
+    ? ""
+    : sameDay(when, today)
+      ? t.callLog.today
+      : sameDay(when, yesterday)
+        ? t.callLog.yesterday
+        : when.toLocaleDateString();
 
   const duration =
     entry.duration > 0
@@ -695,14 +709,21 @@ function CallLogRow({ entry, onCallBack, t }) {
       </span>
       <div className="call-meta">
         <div className="call-name">{entry.name || entry.peerId}</div>
-        <div className="call-sub">
+        {/* The kind of call is a glyph, not a word: spelled out, the line ran
+            past the sidebar and truncated the outcome instead. */}
+        <div className="call-sub" title={entry.video ? t.callLog.video : t.callLog.audio}>
+          {entry.video ? (
+            <span role="img" aria-label={t.callLog.video}>
+              🎥{" "}
+            </span>
+          ) : null}
           {incoming ? t.callLog.incoming : t.callLog.outgoing} · {outcomeLabel}
-          {duration ? ` · ${duration}` : ""} · {entry.video ? t.callLog.video : t.callLog.audio}
+          {duration ? ` · ${duration}` : ""}
         </div>
       </div>
       <div className="call-when">
-        <span>{day}</span>
-        <span>{time}</span>
+        {day && <span>{day}</span>}
+        {time && <span>{time}</span>}
       </div>
       <button
         type="button"
@@ -723,43 +744,84 @@ function CallLogRow({ entry, onCallBack, t }) {
 function QuickAudio({ t }) {
   const { micDevice, screenQuality, audioInputs, updateMicDevice, updateScreenQuality } =
     useAudioPrefs();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+
+  // A popover, not two selects sitting in the chat list: the list is for chats,
+  // and full-width dropdowns in it read as content rather than controls.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => {
+      if (!wrapRef.current?.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
 
   return (
-    <div className="quick-audio">
-      <label className="quick-audio-row">
-        <span className="quick-audio-icon" aria-hidden="true">🎙</span>
-        <select
-          value={micDevice}
-          onChange={(e) => updateMicDevice(e.target.value)}
-          title={t.quickAudio.mic}
-          aria-label={t.quickAudio.mic}
-        >
-          <option value="">{t.settings.micDefault}</option>
-          {audioInputs.map((d, i) => (
-            <option key={d.deviceId || i} value={d.deviceId}>
-              {d.label || `Audio input ${i + 1}`}
-            </option>
-          ))}
-        </select>
-      </label>
+    <div className="quick-audio" ref={wrapRef}>
+      <button
+        type="button"
+        className={"footer-btn icon-only " + (open ? "active" : "")}
+        title={t.quickAudio.title}
+        aria-label={t.quickAudio.title}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <rect x="5.6" y="1.8" width="4.8" height="8" rx="2.4"
+            stroke="currentColor" strokeWidth="1.4" />
+          <path d="M3.2 7.6a4.8 4.8 0 0 0 9.6 0M8 12.4v1.8"
+            stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        </svg>
+      </button>
 
-      <label className="quick-audio-row">
-        <span className="quick-audio-icon" aria-hidden="true">🔊</span>
-        <select
-          value={screenQuality.audioSource}
-          onChange={(e) => updateScreenQuality({ audioSource: e.target.value })}
-          title={t.quickAudio.screenAudio}
-          aria-label={t.quickAudio.screenAudio}
-        >
-          <option value="">{t.settings.screenAudioSystem}</option>
-          <option value="none">{t.settings.screenAudioNone}</option>
-          {audioInputs.map((d, i) => (
-            <option key={d.deviceId || i} value={d.deviceId}>
-              {d.label || `Audio input ${i + 1}`}
-            </option>
-          ))}
-        </select>
-      </label>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            className="quick-audio-pop glass-strong"
+            initial={{ opacity: 0, y: 6, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 6, scale: 0.98 }}
+            transition={{ duration: 0.14 }}
+          >
+            <div className="quick-audio-title">{t.quickAudio.title}</div>
+
+            <label className="quick-audio-row">
+              <span>{t.quickAudio.mic}</span>
+              <select value={micDevice} onChange={(e) => updateMicDevice(e.target.value)}>
+                <option value="">{t.settings.micDefault}</option>
+                {audioInputs.map((d, i) => (
+                  <option key={d.deviceId || i} value={d.deviceId}>
+                    {d.label || `Audio input ${i + 1}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="quick-audio-row">
+              <span>{t.quickAudio.screenAudio}</span>
+              <select
+                value={screenQuality.audioSource}
+                onChange={(e) => updateScreenQuality({ audioSource: e.target.value })}
+              >
+                <option value="">{t.settings.screenAudioSystem}</option>
+                <option value="none">{t.settings.screenAudioNone}</option>
+                {audioInputs.map((d, i) => (
+                  <option key={d.deviceId || i} value={d.deviceId}>
+                    {d.label || `Audio input ${i + 1}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -813,8 +875,10 @@ function SideMenu({ open, onClose, profile, onOpenProfile, onOpenCalls, onOpenNe
               <Avatar name={profile?.name} avatar={profile?.avatar} size="md" />
               <div className="side-menu-identity">
                 <div className="side-menu-name">{profile?.name || ""}</div>
+                {/* Register already stores the leading @, so prefixing another
+                    one here produced "@@name". */}
                 {profile?.username ? (
-                  <div className="side-menu-username">@{profile.username}</div>
+                  <div className="side-menu-username">{withAt(profile.username)}</div>
                 ) : null}
               </div>
             </button>
@@ -1097,11 +1161,10 @@ function Sidebar({
         </div>
       )}
 
-      {/* Settings moved into the side menu; this space now picks the audio
-          devices, which is what people actually reach for mid-call. */}
-      <QuickAudio t={t} />
-
       <div className="sidebar-footer">
+        {/* Settings moved into the side menu; the devices people reach for
+            mid-call sit here beside the network and GitHub buttons. */}
+        <QuickAudio t={t} />
         <button
           type="button"
           className={"footer-btn icon-only " + (netActive ? "net-on" : "")}

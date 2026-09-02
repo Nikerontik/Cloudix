@@ -9,6 +9,11 @@
 :root {
   --titlebar-h: 38px;
   --winbar-h: 38px;
+  /* Height of whatever window chrome is on screen, so a full-height overlay can
+     start below it instead of sliding under the traffic lights or the Windows
+     caption buttons. macOS uses the .titlebar inset; Windows draws its own bar
+     and collapses that inset to zero. */
+  --chrome-h: var(--titlebar-h);
   --sidebar-w: 320px;
   --radius-xl: 22px;
   --radius-lg: 16px;
@@ -436,6 +441,15 @@ button {
 [data-platform="windows"] .titlebar,
 [data-platform="linux"] .titlebar {
   height: 0;
+}
+
+[data-platform="windows"] {
+  --chrome-h: var(--winbar-h);
+}
+
+/* Linux draws neither, so nothing is in the way. */
+[data-platform="linux"] {
+  --chrome-h: 0px;
 }
 
 .app-shell {
@@ -1621,7 +1635,10 @@ button {
 
 .profile-overlay {
   position: absolute;
-  inset: 0;
+  top: var(--chrome-h);
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 35;
   background: rgba(0, 0, 0, 0.32);
   backdrop-filter: blur(3px);
@@ -1660,15 +1677,9 @@ button {
   opacity: 0.7;
 }
 
-.profile-hero {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 0 20px 0;
-}
-
-.profile-hero input {
+/* The name field while editing your own profile. It lives inside .profile-cover
+   now — .profile-hero was replaced by that and its rules were left orphaned. */
+.profile-cover input {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 7px 11px;
@@ -1676,6 +1687,7 @@ button {
   color: var(--text);
   outline: none;
   width: 80%;
+  text-align: center;
 }
 
 .profile-name {
@@ -2947,20 +2959,54 @@ button {
    Identifiers, never colour literals, cross the wire: the palette lives here so
    a decorated profile still sits inside whatever theme the viewer picked, and so
    a peer cannot push arbitrary CSS into someone else's client.
+
+   The colour is a translucent wash over the panel rather than a solid fill.
+   That keeps it glassy, lets the theme show through, and — the practical part —
+   means the text on top stays the theme's own colour, so it is legible on light
+   and dark alike without any per-colour contrast juggling.
 */
 .profile-cover {
   position: relative;
-  margin: -14px -14px 0;
-  padding: 26px 18px 20px;
+  /* A rounded card inside the panel, not a full-bleed banner: at full bleed it
+     ran into the Back button above and the action row below. */
+  margin: 6px 0 14px;
+  padding: 22px 18px 18px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
   overflow: hidden;
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  /* Default: the panel's own glass, i.e. no decoration chosen. */
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
   background: linear-gradient(180deg, var(--hover), transparent);
   isolation: isolate;
+}
+
+/* Undecorated profiles keep the plain panel look. */
+.profile-cover[data-bg]:not([data-bg=""]) {
+  background:
+    linear-gradient(
+      135deg,
+      rgba(var(--tint-a), 0.42) 0%,
+      rgba(var(--tint-b), 0.26) 100%
+    ),
+    var(--panel);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  border-color: rgba(var(--tint-a), 0.28);
+}
+
+/* A soft bloom keeps the wash from reading as a flat rectangle. */
+.profile-cover[data-bg]:not([data-bg=""])::before {
+  content: "";
+  position: absolute;
+  inset: -40% -20% auto;
+  height: 140%;
+  pointer-events: none;
+  background: radial-gradient(closest-side, rgba(var(--tint-a), 0.55), transparent 72%);
+  filter: blur(26px);
+  opacity: 0.7;
+  z-index: -2;
 }
 
 /* The pattern layer sits between the colour and the content. */
@@ -2969,7 +3015,7 @@ button {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  opacity: 0.5;
+  opacity: 0.32;
   background-image: var(--cover-pattern, none);
   background-size: var(--cover-pattern-size, 32px 32px);
   z-index: -1;
@@ -2980,61 +3026,55 @@ button {
   z-index: 1;
 }
 
-/* A decorated cover carries its own light text regardless of theme, because the
-   colours below are fixed and always dark enough for white. */
-.profile-cover[data-bg]:not([data-bg=""]) .profile-name,
-.profile-cover[data-bg]:not([data-bg=""]) .profile-status {
-  color: #ffffff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
-}
+.profile-cover[data-bg="red"]    { --tint-a: 207, 75, 75;  --tint-b: 207, 75, 75; }
+.profile-cover[data-bg="orange"] { --tint-a: 217, 127, 46; --tint-b: 217, 127, 46; }
+.profile-cover[data-bg="purple"] { --tint-a: 130, 89, 204; --tint-b: 130, 89, 204; }
+.profile-cover[data-bg="green"]  { --tint-a: 61, 150, 96;  --tint-b: 61, 150, 96; }
+.profile-cover[data-bg="teal"]   { --tint-a: 47, 150, 145; --tint-b: 47, 150, 145; }
+.profile-cover[data-bg="blue"]   { --tint-a: 63, 127, 204; --tint-b: 63, 127, 204; }
+.profile-cover[data-bg="pink"]   { --tint-a: 204, 91, 149; --tint-b: 204, 91, 149; }
+.profile-cover[data-bg="gray"]   { --tint-a: 107, 114, 124; --tint-b: 107, 114, 124; }
 
-.profile-cover[data-bg="red"]    { background: #cf4b4b; }
-.profile-cover[data-bg="orange"] { background: #d97f2e; }
-.profile-cover[data-bg="purple"] { background: #8259cc; }
-.profile-cover[data-bg="green"]  { background: #3d9660; }
-.profile-cover[data-bg="teal"]   { background: #2f9691; }
-.profile-cover[data-bg="blue"]   { background: #3f7fcc; }
-.profile-cover[data-bg="pink"]   { background: #cc5b95; }
-.profile-cover[data-bg="gray"]   { background: #6b727c; }
-
-.profile-cover[data-bg="red-gradient"]    { background: linear-gradient(135deg, #f0765f 0%, #ab2f4d 100%); }
-.profile-cover[data-bg="orange-gradient"] { background: linear-gradient(135deg, #f5a94b 0%, #c25a1e 100%); }
-.profile-cover[data-bg="purple-gradient"] { background: linear-gradient(135deg, #a97ae8 0%, #5c34a3 100%); }
-.profile-cover[data-bg="green-gradient"]  { background: linear-gradient(135deg, #6cc487 0%, #257048 100%); }
-.profile-cover[data-bg="teal-gradient"]   { background: linear-gradient(135deg, #56c4bd 0%, #1c6f76 100%); }
-.profile-cover[data-bg="blue-gradient"]   { background: linear-gradient(135deg, #6aa8e8 0%, #2a559e 100%); }
-.profile-cover[data-bg="pink-gradient"]   { background: linear-gradient(135deg, #f087b6 0%, #a83a74 100%); }
-.profile-cover[data-bg="gray-gradient"]   { background: linear-gradient(135deg, #9099a5 0%, #4a515b 100%); }
+.profile-cover[data-bg="red-gradient"]    { --tint-a: 240, 118, 95; --tint-b: 171, 47, 77; }
+.profile-cover[data-bg="orange-gradient"] { --tint-a: 245, 169, 75; --tint-b: 194, 90, 30; }
+.profile-cover[data-bg="purple-gradient"] { --tint-a: 169, 122, 232; --tint-b: 92, 52, 163; }
+.profile-cover[data-bg="green-gradient"]  { --tint-a: 108, 196, 135; --tint-b: 37, 112, 72; }
+.profile-cover[data-bg="teal-gradient"]   { --tint-a: 86, 196, 189; --tint-b: 28, 111, 118; }
+.profile-cover[data-bg="blue-gradient"]   { --tint-a: 106, 168, 232; --tint-b: 42, 85, 158; }
+.profile-cover[data-bg="pink-gradient"]   { --tint-a: 240, 135, 182; --tint-b: 168, 58, 116; }
+.profile-cover[data-bg="gray-gradient"]   { --tint-a: 144, 153, 165; --tint-b: 74, 81, 91; }
 
 /* Patterns are inline SVG so they scale and tint with one rule each. '#' must be
-   percent-encoded inside a data: URI or the URL terminates early. */
+   percent-encoded inside a data: URI or the URL terminates early. They are drawn
+   in the theme's own text colour via currentColor-like opacity, so they read on
+   a light wash as well as a dark one. */
 .profile-cover[data-pattern="dots"] {
-  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='6' cy='6' r='2.5' fill='%23ffffff' fill-opacity='0.5'/%3E%3Ccircle cx='18' cy='18' r='2.5' fill='%23ffffff' fill-opacity='0.5'/%3E%3C/svg%3E");
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='6' cy='6' r='2.5' fill='%23808890'/%3E%3Ccircle cx='18' cy='18' r='2.5' fill='%23808890'/%3E%3C/svg%3E");
   --cover-pattern-size: 24px 24px;
 }
 
 .profile-cover[data-pattern="grid"] {
-  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28'%3E%3Cpath d='M0 0H28M0 14H28M0 0V28M14 0V28' stroke='%23ffffff' stroke-opacity='0.35' stroke-width='1'/%3E%3C/svg%3E");
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28'%3E%3Cpath d='M0 0H28M0 14H28M0 0V28M14 0V28' stroke='%23808890' stroke-width='1'/%3E%3C/svg%3E");
   --cover-pattern-size: 28px 28px;
 }
 
 .profile-cover[data-pattern="waves"] {
-  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='24'%3E%3Cpath d='M0 18c8 0 8-12 16-12s8 12 16 12 8-12 16-12' fill='none' stroke='%23ffffff' stroke-opacity='0.4' stroke-width='2'/%3E%3C/svg%3E");
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='24'%3E%3Cpath d='M0 18c8 0 8-12 16-12s8 12 16 12 8-12 16-12' fill='none' stroke='%23808890' stroke-width='2'/%3E%3C/svg%3E");
   --cover-pattern-size: 48px 24px;
 }
 
 .profile-cover[data-pattern="stars"] {
-  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36'%3E%3Cpath d='M10 3l1.6 4.4L16 9l-4.4 1.6L10 15l-1.6-4.4L4 9l4.4-1.6z' fill='%23ffffff' fill-opacity='0.45'/%3E%3Cpath d='M27 20l1.1 3L31 24l-2.9 1.1L27 28l-1.1-2.9L23 24l2.9-1z' fill='%23ffffff' fill-opacity='0.35'/%3E%3C/svg%3E");
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36'%3E%3Cpath d='M10 3l1.6 4.4L16 9l-4.4 1.6L10 15l-1.6-4.4L4 9l4.4-1.6z' fill='%23808890'/%3E%3Cpath d='M27 20l1.1 3L31 24l-2.9 1.1L27 28l-1.1-2.9L23 24l2.9-1z' fill='%23808890'/%3E%3C/svg%3E");
   --cover-pattern-size: 36px 36px;
 }
 
 .profile-cover[data-pattern="hearts"] {
-  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M11 18S4 13.5 4 9.2A3.7 3.7 0 0 1 11 7a3.7 3.7 0 0 1 7 2.2C18 13.5 11 18 11 18z' fill='%23ffffff' fill-opacity='0.4'/%3E%3C/svg%3E");
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M11 18S4 13.5 4 9.2A3.7 3.7 0 0 1 11 7a3.7 3.7 0 0 1 7 2.2C18 13.5 11 18 11 18z' fill='%23808890'/%3E%3C/svg%3E");
   --cover-pattern-size: 32px 32px;
 }
 
 .profile-cover[data-pattern="rings"] {
-  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Ccircle cx='20' cy='20' r='13' fill='none' stroke='%23ffffff' stroke-opacity='0.32' stroke-width='2'/%3E%3Ccircle cx='20' cy='20' r='6' fill='none' stroke='%23ffffff' stroke-opacity='0.24' stroke-width='2'/%3E%3C/svg%3E");
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Ccircle cx='20' cy='20' r='13' fill='none' stroke='%23808890' stroke-width='2'/%3E%3Ccircle cx='20' cy='20' r='6' fill='none' stroke='%23808890' stroke-width='2'/%3E%3C/svg%3E");
   --cover-pattern-size: 40px 40px;
 }
 
@@ -3168,7 +3208,10 @@ button {
 
 .side-menu-scrim {
   position: fixed;
-  inset: 0;
+  top: var(--chrome-h);
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 60;
   background: rgba(6, 8, 14, 0.42);
   backdrop-filter: blur(3px);
@@ -3407,36 +3450,61 @@ button {
 }
 
 /* -------------------------------------------------- quick audio picker --- */
+/* Lives in the sidebar footer beside the network and GitHub buttons: two
+   full-width dropdowns in the chat list read as content, not as controls. */
 
 .quick-audio {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.quick-audio-pop {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  z-index: 30;
+  /* .sidebar sets overflow:hidden and .glass adds a backdrop-filter, which makes
+     it a containing block — so this cannot escape the sidebar even as `fixed`.
+     Keep it inside instead of letting it clip on a narrow window. */
+  width: min(262px, calc(var(--sidebar-w) - 24px));
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding: 8px 10px 4px;
-  flex-shrink: 0;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+.quick-audio-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
 }
 
 .quick-audio-row {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
   min-width: 0;
 }
 
-.quick-audio-icon {
-  width: 18px;
-  flex-shrink: 0;
-  text-align: center;
-  font-size: 13px;
-  opacity: 0.75;
+.quick-audio-row > span {
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .quick-audio-row select {
-  flex: 1;
+  width: 100%;
   min-width: 0;
   font-size: 12px;
-  padding: 5px 8px;
-  border-radius: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--track);
+  color: var(--text);
 }
 
 /* Restoring a profile is the secondary path through onboarding, so it reads as
@@ -3552,10 +3620,6 @@ button {
 /* Short windows: the device pickers are the first thing that can go, since the
    same controls live in Settings. */
 @media (max-height: 560px) {
-  .quick-audio {
-    display: none;
-  }
-
   .side-menu {
     padding-top: 12px;
   }

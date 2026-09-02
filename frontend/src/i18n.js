@@ -305,7 +305,7 @@ const dict = {
     },
     callLog: {
       title: "Журнал звонков",
-      empty: "Звонков пока не было",
+      empty: "Звонков пока не было.",
       incoming: "Входящий",
       outgoing: "Исходящий",
       missed: "Пропущенный",
@@ -686,7 +686,7 @@ const dict = {
     },
     callLog: {
       title: "Call log",
-      empty: "No calls yet",
+      empty: "No calls yet.",
       incoming: "Incoming",
       outgoing: "Outgoing",
       missed: "Missed",
