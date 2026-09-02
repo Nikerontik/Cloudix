@@ -822,8 +822,15 @@ button {
   height: 64px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  /* Three icon buttons read better centred than pinned left, now that the
+     settings button with its label has moved into the side menu. */
+  justify-content: center;
+  gap: 10px;
   padding: 0 12px;
+  /* The device popover anchors to the footer, not to its button: the button
+     sits off-centre among the three, so anchoring there pushed the popover past
+     the sidebar's left edge. */
+  position: relative;
   border-top: 1px solid var(--border);
   --wails-draggable: no-drag;
 }
@@ -3455,19 +3462,18 @@ button {
    full-width dropdowns in the chat list read as content, not as controls. */
 
 .quick-audio {
-  position: relative;
   flex-shrink: 0;
 }
 
 .quick-audio-pop {
   position: absolute;
-  bottom: calc(100% + 10px);
-  left: 0;
+  bottom: calc(100% + 6px);
+  left: 12px;
+  right: 12px;
   z-index: 30;
   /* .sidebar sets overflow:hidden and .glass adds a backdrop-filter, which makes
      it a containing block — so this cannot escape the sidebar even as `fixed`.
-     Keep it inside instead of letting it clip on a narrow window. */
-  width: min(262px, calc(var(--sidebar-w) - 24px));
+     Spanning the footer keeps it inside at any sidebar width. */
   display: flex;
   flex-direction: column;
   gap: 9px;
@@ -3670,9 +3676,24 @@ button {
   font-size: 13.5px;
 }
 
+/* In the profile panel the rows are plain blocks, so the wrapper takes the full
+   width its neighbours do rather than the Settings cap. */
+.profile-info-row .username-input {
+  max-width: none;
+  width: 100%;
+  padding: 0 10px;
+}
+
+.profile-info-row .username-input input {
+  padding: 6px 0;
+}
+
 /* In onboarding the wrapper has to match the fields above and below it, which
    are taller and rounder than the ones in Settings. */
 .onboarding-field .username-input {
+  /* .onboarding-field is a column, so the flex shorthand the wrapper carries for
+     .settings-row would read 160px as a *height* and then grow from there. */
+  flex: 0 0 auto;
   max-width: none;
   width: 100%;
   padding: 0 13px;
