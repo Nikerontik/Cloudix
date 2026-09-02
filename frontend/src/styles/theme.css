@@ -146,6 +146,165 @@
   color-scheme: light;
 }
 
+/* Night — near-black. Where "dark" is a charcoal panel over a tinted glow, this
+   drops the glow almost entirely and lets the panels do the separating, for
+   OLED screens and for people who find dark still too bright. */
+[data-theme="night"] {
+  --bg: #000000;
+  --bg-glow-a: rgba(90, 110, 150, 0.10);
+  --bg-glow-b: rgba(70, 80, 120, 0.08);
+  --bg-glow-c: rgba(40, 60, 90, 0.06);
+
+  --panel: rgba(16, 17, 21, 0.72);
+  --panel-strong: rgba(22, 23, 28, 0.92);
+  --panel-solid: #08090c;
+  --panel-blur: 30px;
+
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.13);
+  --sheen: rgba(255, 255, 255, 0.06);
+
+  --text: #e9ebf0;
+  --text-secondary: #8b909c;
+  --text-tertiary: #5f636e;
+
+  --accent: #6a8dff;
+  --accent-2: #8fb2ff;
+  --accent-soft: rgba(106, 141, 255, 0.16);
+  --accent-contrast: #ffffff;
+
+  --bubble-out: linear-gradient(135deg, #4a6fe0 0%, #2d4bb5 100%);
+  --bubble-in: rgba(30, 32, 40, 0.78);
+
+  --hover: rgba(255, 255, 255, 0.05);
+  --track: rgba(255, 255, 255, 0.04);
+  --active-bg: linear-gradient(135deg, rgba(106, 141, 255, 0.22), rgba(143, 178, 255, 0.10));
+
+  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 12px 34px rgba(0, 0, 0, 0.62);
+  --shadow-lg: 0 28px 80px rgba(0, 0, 0, 0.8);
+
+  --scrollbar: rgba(255, 255, 255, 0.15);
+  color-scheme: dark;
+}
+
+/* Crimson Moon — deep red over near-black. The shifting part is the backdrop
+   glow, animated in the .app-root::before rule further down; the panel colours
+   stay put so text contrast never moves. */
+[data-theme="crimson"] {
+  --bg: #0a0406;
+  --bg-glow-a: rgba(210, 40, 60, 0.30);
+  --bg-glow-b: rgba(120, 20, 50, 0.26);
+  --bg-glow-c: rgba(60, 10, 30, 0.20);
+
+  --panel: rgba(32, 16, 21, 0.62);
+  --panel-strong: rgba(40, 20, 26, 0.90);
+  --panel-solid: #150a0e;
+  --panel-blur: 36px;
+
+  --border: rgba(255, 160, 175, 0.12);
+  --border-strong: rgba(255, 160, 175, 0.20);
+  --sheen: rgba(255, 200, 210, 0.09);
+
+  --text: #f7e9ec;
+  --text-secondary: #bd939c;
+  --text-tertiary: #8b676f;
+
+  --accent: #ef4056;
+  --accent-2: #ff7a8a;
+  --accent-soft: rgba(239, 64, 86, 0.18);
+  --accent-contrast: #ffffff;
+
+  --bubble-out: linear-gradient(135deg, #e03a52 0%, #8c132e 100%);
+  --bubble-in: rgba(58, 30, 38, 0.68);
+
+  --hover: rgba(255, 190, 200, 0.07);
+  --track: rgba(255, 190, 200, 0.05);
+  --active-bg: linear-gradient(135deg, rgba(239, 64, 86, 0.26), rgba(255, 122, 138, 0.12));
+
+  --danger: #ff5a4d;
+  --success: #4ad07f;
+
+  --shadow-sm: 0 2px 10px rgba(30, 0, 8, 0.55);
+  --shadow-md: 0 12px 34px rgba(30, 0, 8, 0.6);
+  --shadow-lg: 0 28px 80px rgba(20, 0, 6, 0.78);
+
+  --scrollbar: rgba(255, 160, 175, 0.22);
+  color-scheme: dark;
+}
+
+/* Pastel mint — light, low-saturation green. */
+[data-theme="mint"] {
+  --bg: #eef8f1;
+  --bg-glow-a: rgba(120, 210, 160, 0.26);
+  --bg-glow-b: rgba(150, 220, 210, 0.22);
+  --bg-glow-c: rgba(215, 235, 170, 0.20);
+
+  --panel: rgba(252, 255, 253, 0.60);
+  --panel-strong: rgba(250, 255, 252, 0.88);
+  --panel-solid: #f5fbf7;
+  --panel-blur: 34px;
+
+  --border: rgba(40, 100, 75, 0.10);
+  --border-strong: rgba(40, 100, 75, 0.17);
+  --sheen: rgba(255, 255, 255, 0.72);
+
+  --text: #1c3a2c;
+  --text-secondary: #5f8672;
+  --text-tertiary: #8fae9d;
+
+  --accent: #2fa06a;
+  --accent-2: #6fd3a2;
+  --accent-soft: rgba(47, 160, 106, 0.14);
+  --accent-contrast: #ffffff;
+
+  --bubble-out: linear-gradient(135deg, #6fd3a2 0%, #2fa06a 100%);
+  --bubble-in: rgba(255, 255, 255, 0.82);
+
+  --hover: rgba(40, 100, 75, 0.06);
+  --track: rgba(40, 100, 75, 0.05);
+  --active-bg: linear-gradient(135deg, rgba(47, 160, 106, 0.18), rgba(150, 220, 190, 0.16));
+
+  --danger: #e0574b;
+  --success: #2fa06a;
+  --warning: #d99524;
+
+  --shadow-sm: 0 2px 8px rgba(30, 90, 65, 0.08);
+  --shadow-md: 0 10px 30px rgba(30, 90, 65, 0.13);
+  --shadow-lg: 0 24px 70px rgba(30, 90, 65, 0.22);
+
+  --scrollbar: rgba(40, 100, 75, 0.20);
+  color-scheme: light;
+}
+
+/* Crimson Moon shifts. Only the backdrop moves — a third glow layer drifting on
+   its own slower cycle over the two the base rule already animates — so the
+   colour behind the panels breathes while text contrast stays fixed.
+   prefers-reduced-motion is honoured by the shared rule further down, which
+   disables animations wholesale. */
+[data-theme="crimson"] .app-root::before {
+  opacity: 0.75;
+  background:
+    radial-gradient(closest-side, var(--bg-glow-a), transparent 70%) 20% 30% / 55% 55% no-repeat,
+    radial-gradient(closest-side, var(--bg-glow-b), transparent 70%) 80% 70% / 60% 60% no-repeat,
+    radial-gradient(closest-side, var(--bg-glow-c), transparent 72%) 50% 100% / 75% 65% no-repeat;
+  animation:
+    aurora 26s var(--ease-soft) infinite alternate,
+    crimson-drift 19s ease-in-out infinite alternate;
+}
+
+@keyframes crimson-drift {
+  0% {
+    filter: blur(30px) hue-rotate(0deg) saturate(1);
+  }
+  50% {
+    filter: blur(38px) hue-rotate(-14deg) saturate(1.25);
+  }
+  100% {
+    filter: blur(30px) hue-rotate(8deg) saturate(1.1);
+  }
+}
+
 /* ---------------------------------------------------------------- base --- */
 
 * {
@@ -349,6 +508,15 @@ button {
   padding: 12px 14px 4px 16px;
   flex-shrink: 0;
   --wails-draggable: drag;
+}
+
+.brand-identity {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  /* The avatar is a button, so this half of the row must not drag the window. */
+  --wails-draggable: no-drag;
 }
 
 .brand-title {
@@ -740,6 +908,20 @@ button {
   width: 92px;
   height: 92px;
   font-size: 34px;
+}
+
+/* Small enough to sit beside the wordmark without pushing the brand row taller
+   than the mac traffic-light inset it has to clear. */
+.avatar.sm {
+  width: 26px;
+  height: 26px;
+  font-size: 11px;
+}
+
+.avatar.md {
+  width: 46px;
+  height: 46px;
+  font-size: 18px;
 }
 
 .online-dot-badge {
@@ -1171,9 +1353,103 @@ button {
 /* ------------------------------------------------------------ settings --- */
 
 .settings-panel {
-  overflow-y: auto;
-  padding: 18px 26px 30px 26px;
+  /* The shell owns the scrolling now: the nav column has to stay put while the
+     content beside it scrolls. */
+  overflow: hidden;
+  padding: 0;
   --wails-draggable: no-drag;
+}
+
+.settings-shell {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.settings-nav {
+  width: 208px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 18px 10px 16px;
+  border-right: 1px solid var(--border);
+  background: var(--track);
+  overflow-y: auto;
+}
+
+.settings-nav-title {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.4px;
+  padding: 6px 10px 10px;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
+  border: none;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--ease), color var(--ease);
+}
+
+.settings-nav-item:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.settings-nav-item.active {
+  background: var(--active-bg);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.settings-nav-icon {
+  width: 18px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 14px;
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 22px 26px 30px;
+}
+
+/* The first group title in a section should not push away from the top edge the
+   way a mid-panel one does. */
+.settings-content > *:first-child.settings-group-title {
+  margin-top: 0;
+}
+
+/* A row whose control is a wrapping grid of swatches cannot sit on one line. */
+.settings-row.stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+}
+
+.settings-hint.success {
+  color: var(--success);
+  word-break: break-all;
+}
+
+.close-settings {
+  border: none;
+  background: transparent;
+  padding: 4px 10px;
+  text-align: left;
+  width: 100%;
 }
 
 .close-settings {
@@ -2660,4 +2936,627 @@ button {
   color: var(--accent);
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* ------------------------------------------------------- profile decor --- */
+/*
+   The cover behind a profile's avatar. Both the colour and the pattern are
+   chosen by the profile's owner and travel with the profile, so everyone sees
+   the same card — see models.Profile.Background / .Pattern.
+
+   Identifiers, never colour literals, cross the wire: the palette lives here so
+   a decorated profile still sits inside whatever theme the viewer picked, and so
+   a peer cannot push arbitrary CSS into someone else's client.
+*/
+.profile-cover {
+  position: relative;
+  margin: -14px -14px 0;
+  padding: 26px 18px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  /* Default: the panel's own glass, i.e. no decoration chosen. */
+  background: linear-gradient(180deg, var(--hover), transparent);
+  isolation: isolate;
+}
+
+/* The pattern layer sits between the colour and the content. */
+.profile-cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image: var(--cover-pattern, none);
+  background-size: var(--cover-pattern-size, 32px 32px);
+  z-index: -1;
+}
+
+.profile-cover > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* A decorated cover carries its own light text regardless of theme, because the
+   colours below are fixed and always dark enough for white. */
+.profile-cover[data-bg]:not([data-bg=""]) .profile-name,
+.profile-cover[data-bg]:not([data-bg=""]) .profile-status {
+  color: #ffffff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+}
+
+.profile-cover[data-bg="red"]    { background: #cf4b4b; }
+.profile-cover[data-bg="orange"] { background: #d97f2e; }
+.profile-cover[data-bg="purple"] { background: #8259cc; }
+.profile-cover[data-bg="green"]  { background: #3d9660; }
+.profile-cover[data-bg="teal"]   { background: #2f9691; }
+.profile-cover[data-bg="blue"]   { background: #3f7fcc; }
+.profile-cover[data-bg="pink"]   { background: #cc5b95; }
+.profile-cover[data-bg="gray"]   { background: #6b727c; }
+
+.profile-cover[data-bg="red-gradient"]    { background: linear-gradient(135deg, #f0765f 0%, #ab2f4d 100%); }
+.profile-cover[data-bg="orange-gradient"] { background: linear-gradient(135deg, #f5a94b 0%, #c25a1e 100%); }
+.profile-cover[data-bg="purple-gradient"] { background: linear-gradient(135deg, #a97ae8 0%, #5c34a3 100%); }
+.profile-cover[data-bg="green-gradient"]  { background: linear-gradient(135deg, #6cc487 0%, #257048 100%); }
+.profile-cover[data-bg="teal-gradient"]   { background: linear-gradient(135deg, #56c4bd 0%, #1c6f76 100%); }
+.profile-cover[data-bg="blue-gradient"]   { background: linear-gradient(135deg, #6aa8e8 0%, #2a559e 100%); }
+.profile-cover[data-bg="pink-gradient"]   { background: linear-gradient(135deg, #f087b6 0%, #a83a74 100%); }
+.profile-cover[data-bg="gray-gradient"]   { background: linear-gradient(135deg, #9099a5 0%, #4a515b 100%); }
+
+/* Patterns are inline SVG so they scale and tint with one rule each. '#' must be
+   percent-encoded inside a data: URI or the URL terminates early. */
+.profile-cover[data-pattern="dots"] {
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='6' cy='6' r='2.5' fill='%23ffffff' fill-opacity='0.5'/%3E%3Ccircle cx='18' cy='18' r='2.5' fill='%23ffffff' fill-opacity='0.5'/%3E%3C/svg%3E");
+  --cover-pattern-size: 24px 24px;
+}
+
+.profile-cover[data-pattern="grid"] {
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28'%3E%3Cpath d='M0 0H28M0 14H28M0 0V28M14 0V28' stroke='%23ffffff' stroke-opacity='0.35' stroke-width='1'/%3E%3C/svg%3E");
+  --cover-pattern-size: 28px 28px;
+}
+
+.profile-cover[data-pattern="waves"] {
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='24'%3E%3Cpath d='M0 18c8 0 8-12 16-12s8 12 16 12 8-12 16-12' fill='none' stroke='%23ffffff' stroke-opacity='0.4' stroke-width='2'/%3E%3C/svg%3E");
+  --cover-pattern-size: 48px 24px;
+}
+
+.profile-cover[data-pattern="stars"] {
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36'%3E%3Cpath d='M10 3l1.6 4.4L16 9l-4.4 1.6L10 15l-1.6-4.4L4 9l4.4-1.6z' fill='%23ffffff' fill-opacity='0.45'/%3E%3Cpath d='M27 20l1.1 3L31 24l-2.9 1.1L27 28l-1.1-2.9L23 24l2.9-1z' fill='%23ffffff' fill-opacity='0.35'/%3E%3C/svg%3E");
+  --cover-pattern-size: 36px 36px;
+}
+
+.profile-cover[data-pattern="hearts"] {
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M11 18S4 13.5 4 9.2A3.7 3.7 0 0 1 11 7a3.7 3.7 0 0 1 7 2.2C18 13.5 11 18 11 18z' fill='%23ffffff' fill-opacity='0.4'/%3E%3C/svg%3E");
+  --cover-pattern-size: 32px 32px;
+}
+
+.profile-cover[data-pattern="rings"] {
+  --cover-pattern: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Ccircle cx='20' cy='20' r='13' fill='none' stroke='%23ffffff' stroke-opacity='0.32' stroke-width='2'/%3E%3Ccircle cx='20' cy='20' r='6' fill='none' stroke='%23ffffff' stroke-opacity='0.24' stroke-width='2'/%3E%3C/svg%3E");
+  --cover-pattern-size: 40px 40px;
+}
+
+/* --- the picker, shown while editing your own profile --- */
+
+.decor-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 2px 2px;
+}
+
+.decor-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.decor-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.decor-swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: transform var(--ease), border-color var(--ease);
+  box-shadow: var(--shadow-sm);
+}
+
+.decor-swatch:hover {
+  transform: scale(1.12);
+}
+
+.decor-swatch.selected {
+  border-color: var(--accent);
+  transform: scale(1.1);
+}
+
+/* "no background" reads as an empty slot, not a black one. */
+.decor-swatch.none {
+  background:
+    linear-gradient(135deg, transparent 44%, var(--danger) 45%, var(--danger) 55%, transparent 56%),
+    var(--track);
+  border: 2px dashed var(--border-strong);
+}
+
+.decor-swatch.none.selected {
+  border-style: solid;
+  border-color: var(--accent);
+}
+
+.decor-patterns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.decor-pattern-btn {
+  font-size: 12px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--track);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--ease);
+}
+
+.decor-pattern-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.decor-pattern-btn.selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.decor-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.45;
+}
+
+/* ------------------------------------------------------ hamburger + menu --- */
+
+.menu-toggle {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--track);
+  cursor: pointer;
+  transition: background var(--ease), border-color var(--ease);
+  --wails-draggable: no-drag;
+}
+
+.menu-toggle:hover {
+  background: var(--hover);
+  border-color: var(--border-strong);
+}
+
+.menu-toggle span {
+  display: block;
+  width: 16px;
+  height: 1.8px;
+  border-radius: 2px;
+  background: var(--text-secondary);
+  transition: background var(--ease);
+}
+
+.menu-toggle:hover span {
+  background: var(--text);
+}
+
+.side-menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(6, 8, 14, 0.42);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+.side-menu {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(300px, 84vw);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 18px 12px 14px;
+  border-right: 1px solid var(--border);
+  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+  box-shadow: var(--shadow-lg);
+  overflow-y: auto;
+}
+
+.side-menu-profile {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 8px;
+  margin-bottom: 4px;
+  border: none;
+  border-radius: 14px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--ease);
+}
+
+.side-menu-profile:hover {
+  background: var(--hover);
+}
+
+.side-menu-identity {
+  min-width: 0;
+}
+
+.side-menu-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.side-menu-username {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.side-menu-divider {
+  height: 1px;
+  margin: 7px 4px;
+  background: var(--border);
+}
+
+.side-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 10px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--ease), color var(--ease);
+}
+
+.side-menu-item:hover {
+  background: var(--hover);
+}
+
+.side-menu-item.danger {
+  color: var(--danger);
+}
+
+.side-menu-icon {
+  width: 20px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 15px;
+  opacity: 0.9;
+}
+
+.side-menu-label {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Marks the overlay network as connected, matching the footer button's state. */
+.side-menu-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+}
+
+.side-menu-theme {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.side-menu-theme select {
+  flex: 1;
+  min-width: 0;
+  max-width: 140px;
+}
+
+.side-menu-spacer {
+  flex: 1;
+  min-height: 12px;
+}
+
+/* ------------------------------------------------------------ call log --- */
+
+.call-list-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 4px 8px;
+}
+
+.call-clear-btn {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--track);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--ease);
+}
+
+.call-clear-btn:hover {
+  background: var(--hover);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.call-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 14px;
+  transition: background var(--ease);
+}
+
+.call-row:hover {
+  background: var(--hover);
+}
+
+.call-arrow {
+  width: 22px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 15px;
+  color: var(--success);
+}
+
+/* A missed call is the one thing in this list worth spotting at a glance. */
+.call-row.missed .call-arrow,
+.call-row.missed .call-name {
+  color: var(--danger);
+}
+
+.call-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.call-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.call-sub {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.call-when {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.call-again {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--track);
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all var(--ease);
+}
+
+.call-again:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* -------------------------------------------------- quick audio picker --- */
+
+.quick-audio {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px 4px;
+  flex-shrink: 0;
+}
+
+.quick-audio-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.quick-audio-icon {
+  width: 18px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 13px;
+  opacity: 0.75;
+}
+
+.quick-audio-row select {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 10px;
+}
+
+/* Restoring a profile is the secondary path through onboarding, so it reads as
+   a link under the primary button rather than competing with it. */
+.onboarding-import {
+  margin-top: 12px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all var(--ease);
+}
+
+.onboarding-import:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.onboarding-import:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.onboarding-import-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+  text-align: center;
+  max-width: 320px;
+}
+
+/* The settings nav is a column of its own, so below the width where two panes
+   plus a 208px rail stop fitting the 620px minimum window, it collapses into a
+   scrolling strip of icons above the content. */
+@media (max-width: 900px) {
+  .settings-shell {
+    flex-direction: column;
+  }
+
+  .settings-nav {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 4px;
+    padding: 10px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .settings-nav-title {
+    display: none;
+  }
+
+  .close-settings {
+    width: auto;
+    flex-shrink: 0;
+    margin-bottom: 0;
+    align-self: center;
+  }
+
+  .settings-nav-item {
+    width: auto;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .settings-content {
+    padding: 16px 18px 24px;
+  }
+}
+
+/* New chrome inside the existing breakpoints. The sidebar narrows to 180px at
+   640px wide, which is not enough for two full-width device pickers or a call
+   row with a date column beside it. */
+@media (max-width: 760px) {
+  .quick-audio {
+    padding: 6px 8px 2px;
+  }
+
+  .quick-audio-row select {
+    font-size: 11px;
+    padding: 4px 6px;
+  }
+}
+
+@media (max-width: 640px) {
+  .brand-identity {
+    gap: 6px;
+  }
+
+  .menu-toggle {
+    width: 34px;
+    height: 34px;
+  }
+
+  /* The date is the least useful column when space runs out; the time stays. */
+  .call-when span:first-child {
+    display: none;
+  }
+
+  .call-sub {
+    font-size: 11px;
+  }
+}
+
+/* Short windows: the device pickers are the first thing that can go, since the
+   same controls live in Settings. */
+@media (max-height: 560px) {
+  .quick-audio {
+    display: none;
+  }
+
+  .side-menu {
+    padding-top: 12px;
+  }
 }
